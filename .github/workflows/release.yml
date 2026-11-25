@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   issues: write
@@ -41,11 +45,18 @@ jobs:
             git add -A
             if ! git diff --cached --quiet; then
               git commit -m "chore: extract uploaded zip patches [skip ci]"
+              git pull --rebase origin ${{ github.ref_name }}
               git push origin HEAD:${{ github.ref_name }}
             fi
           else
             echo "No ZIP files found to extract."
           fi
+
+      - name: Sync branch before semantic-release
+        shell: bash
+        run: |
+          git fetch origin ${{ github.ref_name }} --tags
+          git checkout -B ${{ github.ref_name }} origin/${{ github.ref_name }}
 
       - name: Setup Java
         uses: actions/setup-java@v6.1.0
