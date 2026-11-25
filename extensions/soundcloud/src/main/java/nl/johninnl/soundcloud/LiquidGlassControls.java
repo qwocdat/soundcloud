@@ -9,13 +9,14 @@ import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.os.Build;
 import android.os.SystemClock;
 import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.EditText;
@@ -25,7 +26,7 @@ import java.util.WeakHashMap;
 
 /**
  * Custom iOS 27 Liquid Glass controls (Switch, Slider), verified VietQR renderer
- * (VietinBank 970415 / STK 0989249990), and global SoundCloud UI Liquid Glass styler.
+ * (VietinBank 970415 / STK 0989249990), and clean non-overlapping Global LiquidGlass styler.
  */
 @SuppressLint("NewApi")
 public final class LiquidGlassControls {
@@ -33,45 +34,44 @@ public final class LiquidGlassControls {
     private LiquidGlassControls() {}
 
     // Verified ISO/IEC 18004 Version 5-L (37x37) QR matrix for VietQR VietinBank STK 0989249990
-    // Payload: 00020101021138540010A00000072701240006970415011009892499900208QRIBFTTA53037045802VN6304EF7A
     private static final String[] VIETQR_MATRIX = new String[]{
-            "1111111000100001100001011001101111111",
-            "1000001001000111011101011001101000001",
-            "1011101010010010101000101010101011101",
-            "1011101001001111111110001001101011101",
-            "1011101001001011101001011001101011101",
-            "1000001000111111110101010111001000001",
+            "1111111011000010000011011111001111111",
+            "1000001011011000000010101001001000001",
+            "1011101001010000001111011011001011101",
+            "1011101000011000111010011100001011101",
+            "1011101011011000110110010010001011101",
+            "1000001011110010000010011010001000001",
             "1111111010101010101010101010101111111",
-            "0000000010010110011011110101000000000",
-            "1110111110001000011011100110011000100",
-            "1011000100011100011111100110001101001",
-            "0111101100111100100011101010001011101",
-            "0010100010001100111001010100100101010",
-            "0100101110110110011011100110001101001",
-            "1011110110010110011111100110001101001",
-            "1110111011000100111000000010101010101",
-            "0100100000110110111101010100010101011",
-            "0001001101101001111111100110011101001",
-            "1001110000111101111110100110010101001",
-            "1001001010111010101010100010001011101",
-            "1101010010101110110001110100100001010",
-            "1101111111110010011001100110001101001",
-            "0111010111110001111110100110001101001",
-            "0010111101000100111000101100101110101",
-            "1100100000110000011101110101010001010",
-            "1100111001001000011001100110001101001",
-            "0110000000011100011110100010001101001",
-            "1000011010011010110010100010101010001",
-            "0100100010001111011101111111010111010",
-            "1011001110010010011101100110111111001",
-            "0000000000110010011001100110100011001",
-            "1111111011100100101010100101101011101",
-            "1000001011110001010101010111100011001",
-            "1011101010001001011001100110111111000",
-            "1011101000111100011001100111010011000",
-            "1011101010111010000010101010110011111",
-            "1000001010101111110001011100110011010",
-            "1111111010110010011001100110101011011"
+            "0000000010101000001101000111000000000",
+            "1110111111010101110001100100011010010",
+            "1011000011010101000010010101110110100",
+            "0010101111101010101001000111110100010",
+            "0101000111001000000110000001111100000",
+            "1111111001011111101001111110011010101",
+            "0110010101000100110100100101100101000",
+            "0000101011100100001100100111010100110",
+            "1111000110011010001010100110100100010",
+            "1011001000110011100010110101101110110",
+            "1101100011000111101001011101111001111",
+            "0011111101100100110100011000101001011",
+            "1001110111111011110001100101001001000",
+            "0110011100101110010001111011000111110",
+            "1110010101100010111101010010010100110",
+            "0100011100000111010000001011110000001",
+            "1001010111001000111001000000110101100",
+            "1101101010111101000101101111011001010",
+            "0010100000011010000110101111011101001",
+            "1101001011000010101001111101001011110",
+            "1100110001011100111100010101001110001",
+            "1000101110011111111111000011111110011",
+            "0000000011111000100000010010100010110",
+            "1111111001000110010000101100101010110",
+            "1000001010011000110111100011100011010",
+            "1011101001011111010110010111111110000",
+            "1011101011100111100000000101010100100",
+            "1011101001000000010001101101010110001",
+            "1000001011010011110010011001100101000",
+            "1111111010101000101010111100111001000"
     };
 
     /** Crisp offline VietQR view scannable by all Vietnamese banking apps. */
@@ -130,17 +130,16 @@ public final class LiquidGlassControls {
 
     /**
      * iOS 27 Liquid Glass Switch:
-     * - Frosted translucent capsule track with specular rim
-     * - Refracting glass pill thumb that stretches elastically on press/drag with damped spring physics
+     * Frosted translucent capsule track + crystalline glass thumb that stretches & refracts on press/drag.
      */
     public static final class Ios27GlassSwitch extends View implements Choreographer.FrameCallback {
         private final float density;
         private boolean checked;
-        private OnCheckedChangeListener listener;
+        private final OnCheckedChangeListener listener;
 
-        private float pos = 0f;       // 0 = OFF, 1 = ON
+        private float pos = 0f;
         private float posVel = 0f;
-        private float press = 0f;     // 0 = rest, 1 = pressed
+        private float press = 0f;
         private float pressTarget = 0f;
         private float pressVel = 0f;
         private boolean dragging = false;
@@ -172,10 +171,6 @@ public final class LiquidGlassControls {
             }
         }
 
-        public boolean isChecked() {
-            return checked;
-        }
-
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             setMeasuredDimension(Math.round(58f * density), Math.round(32f * density));
@@ -185,7 +180,7 @@ public final class LiquidGlassControls {
         public boolean onTouchEvent(MotionEvent event) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    getParent().requestDisallowInterceptTouchEvent(true);
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                     downX = event.getX();
                     dragging = false;
                     pressTarget = 1f;
@@ -258,16 +253,12 @@ public final class LiquidGlassControls {
             trackRect.set(pad, pad, w - pad, h - pad);
             float tr = trackRect.height() * 0.5f;
 
-            // Track color blends from frosted dark glass (OFF) to luminous SoundCloud orange-green glass (ON)
-            int offR = 52, offG = 52, offB = 60;
-            int onR = 255, onG = 92, onB = 24;
-            int r = Math.round(offR + (onR - offR) * pos);
-            int g = Math.round(offG + (onG - offG) * pos);
-            int b = Math.round(offB + (onB - offB) * pos);
+            int r = Math.round(52 + (255 - 52) * pos);
+            int g = Math.round(52 + (92 - 52) * pos);
+            int b = Math.round(60 + (24 - 60) * pos);
             trackPaint.setColor(Color.argb(Math.round(170 + 75 * pos), r, g, b));
             canvas.drawRoundRect(trackRect, tr, tr, trackPaint);
 
-            // Track specular glass rim
             rimPaint.setStyle(Paint.Style.STROKE);
             rimPaint.setStrokeWidth(1f * density);
             rimPaint.setShader(new LinearGradient(0f, 0f, 0f, h,
@@ -277,29 +268,25 @@ public final class LiquidGlassControls {
             canvas.drawRoundRect(trackRect, tr, tr, rimPaint);
             rimPaint.setShader(null);
 
-            // iOS 27 Liquid Glass thumb (stretches horizontally + turns crystalline translucent when pressed!)
             float inset = 3f * density;
             float thumbH = trackRect.height() - inset * 2f;
-            float baseW = thumbH * 1.28f;
-            float thumbW = baseW + 8f * density * press;
+            float thumbW = thumbH * 1.28f + 8f * density * press;
             float travel = Math.max(0f, trackRect.width() - inset * 2f - thumbW);
             float tx = trackRect.left + inset + travel * pos;
             float ty = trackRect.top + inset;
             thumbRect.set(tx, ty, tx + thumbW, ty + thumbH);
             float thr = thumbH * 0.5f;
 
-            // Soft shadow under thumb
-            thumbPaint.setColor(Color.argb(Math.round(245 - 95 * press), 255, 255, 255));
+            thumbPaint.setColor(Color.argb(Math.round(245 - 105 * press), 255, 255, 255));
             thumbPaint.setShadowLayer(4f * density, 0f, 1.5f * density, Color.argb(70, 0, 0, 0));
             canvas.drawRoundRect(thumbRect, thr, thr, thumbPaint);
             thumbPaint.clearShadowLayer();
 
-            // Specular crystal rim on thumb (stronger when pressed for iOS 27 refraction look)
             glossPaint.setStyle(Paint.Style.STROKE);
             glossPaint.setStrokeWidth((1f + 0.8f * press) * density);
             glossPaint.setShader(new LinearGradient(thumbRect.left, thumbRect.top, thumbRect.right, thumbRect.bottom,
                     Color.argb(235, 255, 255, 255),
-                    Color.argb(Math.round(80 + 100 * press), 190, 225, 255),
+                    Color.argb(Math.round(80 + 110 * press), 190, 225, 255),
                     Shader.TileMode.CLAMP));
             canvas.drawRoundRect(thumbRect, thr, thr, glossPaint);
             glossPaint.setShader(null);
@@ -312,8 +299,7 @@ public final class LiquidGlassControls {
 
     /**
      * iOS 27 Liquid Glass Slider:
-     * - Thick frosted capsule track with glowing accent fill
-     * - Pill-shaped Liquid Glass thumb that expands & turns crystal-clear translucent when dragged
+     * Frosted capsule track + glowing fill + crystalline pill thumb that expands & turns translucent on drag.
      */
     public static final class Ios27GlassSlider extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -362,7 +348,7 @@ public final class LiquidGlassControls {
             float usable = Math.max(1f, getWidth() - padH * 2f);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    getParent().requestDisallowInterceptTouchEvent(true);
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                     pressTarget = 1f;
                     updateFromX(event.getX(), padH, usable);
                     schedule();
@@ -438,13 +424,11 @@ public final class LiquidGlassControls {
             canvas.drawRoundRect(fillRect, tr, tr, trackFillPaint);
             trackFillPaint.setShader(null);
 
-            // Track subtle glass outline
             rimPaint.setStyle(Paint.Style.STROKE);
             rimPaint.setStrokeWidth(0.9f * density);
             rimPaint.setColor(Color.argb(90, 255, 255, 255));
             canvas.drawRoundRect(trackRect, tr, tr, rimPaint);
 
-            // iOS 27 Liquid Glass pill thumb (expands & becomes crystal translucent on drag)
             float thumbW = (28f + 10f * press) * density;
             float thumbH = (19f + 7f * press) * density;
             float cx = trackRect.left + trackRect.width() * frac;
@@ -456,7 +440,6 @@ public final class LiquidGlassControls {
             canvas.drawRoundRect(thumbRect, thr, thr, thumbPaint);
             thumbPaint.clearShadowLayer();
 
-            // Specular refraction edge on thumb
             rimPaint.setStrokeWidth((1.1f + 0.7f * press) * density);
             rimPaint.setShader(new LinearGradient(thumbRect.left, thumbRect.top, thumbRect.right, thumbRect.bottom,
                     Color.argb(245, 255, 255, 255),
@@ -468,50 +451,91 @@ public final class LiquidGlassControls {
     }
 
     /**
-     * Global Liquid Glass UI styler ("Bật LiquidGlass"):
-     * Applies iOS 27 Liquid Glass pill/circle styling to SoundCloud's buttons, search bars,
-     * back buttons, and switches across the active window.
+     * Global Liquid Glass UI transformer ("Bật LiquidGlass"):
+     * Replaces backgrounds IN-PLACE (never double-layering overlapping boxes on search bars + back icons!)
+     * with translucent frosted glass + top-to-bottom specular rim. Restores cleanly when disabled.
      */
     public static final class GlobalLiquidGlassStyler {
-        private static final WeakHashMap<View, Boolean> STYLED = new WeakHashMap<>();
+        private static final WeakHashMap<View, Drawable> ORIGINAL_BG = new WeakHashMap<>();
         private static long lastScanMs = 0L;
 
         public static void applyIfEnabled(View root, View excludeTabBar, View excludeMiniPill, View excludeAuthorPage, boolean enabled) {
-            if (!enabled || root == null) return;
+            if (root == null) return;
+            if (!enabled) {
+                restoreAll();
+                return;
+            }
             long now = SystemClock.uptimeMillis();
-            if (now - lastScanMs < 450L) return;
+            if (now - lastScanMs < 500L) return;
             lastScanMs = now;
             float density = root.getResources().getDisplayMetrics().density;
             boolean dark = (root.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
             walk(root, excludeTabBar, excludeMiniPill, excludeAuthorPage, density, dark, 0);
         }
 
+        public static void restoreAll() {
+            if (ORIGINAL_BG.isEmpty()) return;
+            for (View v : new java.util.ArrayList<>(ORIGINAL_BG.keySet())) {
+                if (v != null) {
+                    v.setBackground(ORIGINAL_BG.get(v));
+                }
+            }
+            ORIGINAL_BG.clear();
+        }
+
+        private static boolean hasStyledAncestor(View v) {
+            ViewParent p = v.getParent();
+            int depth = 0;
+            while (p instanceof View && depth < 3) {
+                if (ORIGINAL_BG.containsKey(p)) return true;
+                p = p.getParent();
+                depth++;
+            }
+            return false;
+        }
+
+        private static void applyGlassSurface(View target, float density, boolean dark, boolean strong) {
+            if (ORIGINAL_BG.containsKey(target)) return;
+            ORIGINAL_BG.put(target, target.getBackground());
+            GradientDrawable gd = new GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    dark
+                            ? new int[]{Color.argb(strong ? 115 : 82, 52, 54, 66), Color.argb(strong ? 95 : 64, 24, 24, 30)}
+                            : new int[]{Color.argb(140, 255, 255, 255), Color.argb(105, 232, 236, 244)}
+            );
+            gd.setCornerRadius(Math.min(target.getWidth(), target.getHeight()) * 0.5f);
+            gd.setStroke(Math.max(1, Math.round(1f * density)),
+                    dark ? Color.argb(120, 255, 255, 255) : Color.argb(150, 255, 255, 255));
+            target.setBackground(gd);
+        }
+
         private static void walk(View v, View ex1, View ex2, View ex3, float density, boolean dark, int depth) {
             if (v == null || v == ex1 || v == ex2 || v == ex3 || depth > 14 || v.getVisibility() != View.VISIBLE) return;
 
-            if (!STYLED.containsKey(v) && v.getWidth() > 0 && v.getHeight() > 0) {
-                boolean isSearchEdit = (v instanceof EditText);
-                boolean isButton = (v instanceof Button) && !(v instanceof CompoundButton);
-                boolean isSwitch = (v instanceof CompoundButton);
-                boolean isBackOrActionIcon = (v instanceof ImageButton)
-                        && v.getWidth() >= Math.round(30f * density) && v.getWidth() <= Math.round(64f * density)
-                        && v.getHeight() >= Math.round(30f * density) && v.getHeight() <= Math.round(64f * density);
-
-                if (isSearchEdit || isButton || isBackOrActionIcon || isSwitch) {
-                    GradientDrawable gd = new GradientDrawable();
-                    float radius = Math.min(v.getWidth(), v.getHeight()) * 0.5f;
-                    gd.setCornerRadius(radius);
-                    if (isSwitch) {
-                        gd.setColor(dark ? Color.argb(65, 255, 255, 255) : Color.argb(45, 0, 0, 0));
-                    } else if (isSearchEdit) {
-                        gd.setColor(dark ? Color.argb(95, 36, 36, 44) : Color.argb(120, 245, 247, 252));
-                    } else {
-                        gd.setColor(dark ? Color.argb(85, 32, 32, 40) : Color.argb(110, 245, 247, 252));
+            if (!ORIGINAL_BG.containsKey(v) && !hasStyledAncestor(v) && v.getWidth() > 0 && v.getHeight() > 0) {
+                if (v instanceof EditText) {
+                    // Style the search bar's parent container cleanly instead of overlapping inner EditText + back icon
+                    ViewParent parent = v.getParent();
+                    if (parent instanceof ViewGroup) {
+                        ViewGroup pg = (ViewGroup) parent;
+                        if (pg.getHeight() >= Math.round(34f * density) && pg.getHeight() <= Math.round(72f * density)) {
+                            applyGlassSurface(pg, density, dark, true);
+                            v.setBackgroundColor(Color.TRANSPARENT);
+                            return;
+                        }
                     }
-                    gd.setStroke(Math.max(1, Math.round(1f * density)),
-                            dark ? Color.argb(115, 255, 255, 255) : Color.argb(120, 255, 255, 255));
-                    v.setBackground(gd);
-                    STYLED.put(v, Boolean.TRUE);
+                    applyGlassSurface(v, density, dark, true);
+                } else if (v instanceof Button && !(v instanceof CompoundButton)) {
+                    applyGlassSurface(v, density, dark, true);
+                } else if (v instanceof CompoundButton) {
+                    applyGlassSurface(v, density, dark, false);
+                } else if (v instanceof ImageButton) {
+                    int w = v.getWidth();
+                    int h = v.getHeight();
+                    if (w >= Math.round(32f * density) && w <= Math.round(60f * density)
+                            && h >= Math.round(32f * density) && h <= Math.round(60f * density)) {
+                        applyGlassSurface(v, density, dark, false);
+                    }
                 }
             }
 

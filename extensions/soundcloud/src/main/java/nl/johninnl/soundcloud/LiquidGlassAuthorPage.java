@@ -224,7 +224,7 @@ public final class LiquidGlassAuthorPage {
         addSwitchRow(
                 ctx, globalCard, d,
                 "Bật LiquidGlass",
-                "Biến toàn bộ nút bấm, thanh tìm kiếm, nút quay lại và công tắc trong SoundCloud thành hiệu ứng kính Liquid Glass.",
+                "Biến toàn bộ nút bấm, thanh tìm kiếm, nút quay lại và công tắc trong SoundCloud thành hiệu ứng kính Liquid Glass kiểu iOS 27.",
                 sp.getBoolean(KEY_GLOBAL_GLASS, false),
                 checked -> {
                     sp.edit().putBoolean(KEY_GLOBAL_GLASS, checked).apply();
