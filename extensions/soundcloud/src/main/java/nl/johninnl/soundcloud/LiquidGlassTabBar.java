@@ -2,11 +2,8 @@ package nl.johninnl.soundcloud;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.BlendMode;
 import android.graphics.Canvas;
@@ -18,6 +15,8 @@ import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.RectF;
 import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
@@ -30,7 +29,6 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.TypedValue;
@@ -45,9 +43,6 @@ import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 
 import java.lang.ref.WeakReference;
@@ -61,25 +56,17 @@ import java.util.WeakHashMap;
 
 /**
  * 1:1 port of NPatch FloatingGlassBottomBar (AGSL + RenderNode) for SoundCloud:
- * - Mathematically locked left TabBar pill ([12dp .. barW - 78dp]) + right circular Search/Menu button
- *   ([barW - 68dp .. barW - 12dp]) with exact 4dp concentric inset and ZERO left/right overflow.
- * - Direct Window-level touch dispatch so SoundCloud's Mini-Player BottomSheet NEVER blocks TabBar taps.
- * - 5th slot inside TabBar repurposed into "Tác giả" (DigitalXiao info dialog + Settings shortcut).
- * - Floating Liquid Glass Mini-Player (detects both the BottomSheet container and inner pill view).
- * - Two scroll-down modes (configurable in SoundCloud Settings -> Cài đặt TabBar Liquid Glass):
- *     1) Replace mode (default): TabBar collapses into right Search circle (morphs to Menu),
- *        Mini-Player drops into the left slot next to Menu.
- *     2) Stacked mode ("Xếp chồng khi vuốt xuống"): Mini-Player stacks on top of TabBar (still showing
- *        the bottom peek of TabBar). Swiping UP on the stacked Mini-Player plays a 2-phase card-deck
- *        animation where the Mini-Player lifts up, swaps Z-order, and tucks underneath the TabBar!
+ * - Outer TabBar glass background shrinks slightly on press while logos stay 1.0x and the sliding
+ *   Liquid Glass lens bubble expands larger (78/56) with 7-band chromatic dispersion + instant
+ *   accent-color tinting (SRC_IN) on every icon/label pixel the lens touches.
+ * - Right separated circular Search/Menu button with iOS 27 hold-to-glow + elastic rubber-band drag.
+ * - 5th slot inside TabBar opens the full-screen native SoundCloud-style "Tác giả" page (DigitalXiao,
+ *   VietinBank VietQR 0989249990, Global LiquidGlass toggle, and iOS 27 live customization sliders).
+ * - Scroll-down collapses TabBar into the right Search->Menu circle while the Liquid Glass Mini-Player
+ *   drops cleanly into the left slot.
  */
 @SuppressLint("NewApi")
 public final class LiquidGlassTabBar {
-
-    private static final String PREFS_NAME = "sc_liquid_glass_prefs";
-    private static final String KEY_STACKED_MODE = "stacked_scroll_mode";
-    private static final String KEY_SCROLL_COLLAPSE = "scroll_collapse_enabled";
-    private static final String KEY_BLUR_DP = "glass_blur_dp";
 
     private static final WeakHashMap<View, Controller> ATTACHED = new WeakHashMap<>();
     private static WeakReference<Controller> ACTIVE_CONTROLLER = new WeakReference<>(null);
@@ -208,13 +195,17 @@ public final class LiquidGlassTabBar {
         }
     }
 
+    /**
+     * Injects a floating Liquid Glass "Cài đặt TabBar Liquid Glass" button inside SoundCloud's Settings screen
+     * that opens the full-screen Author & Customization page with a Back button.
+     */
     public static View wrapSettingsView(View original) {
         if (original == null) return null;
         try {
             Context ctx = original.getContext();
             float density = ctx.getResources().getDisplayMetrics().density;
 
-            FrameLayout wrapper = new FrameLayout(ctx);
+            final FrameLayout wrapper = new FrameLayout(ctx);
             wrapper.setLayoutParams(new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
@@ -235,10 +226,27 @@ public final class LiquidGlassTabBar {
             GradientDrawable bg = new GradientDrawable();
             bg.setColor(Color.argb(232, 26, 26, 32));
             bg.setCornerRadius(28f * density);
-            bg.setStroke(Math.round(1.2f * density), Color.argb(140, 255, 255, 255));
+            bg.setStroke(Math.round(1.2f * density), Color.argb(145, 255, 255, 255));
             btn.setBackground(bg);
             btn.setElevation(8f * density);
-            btn.setOnClickListener(v -> showSettingsDialog(ctx));
+
+            final View[] overlayPageRef = new View[1];
+            btn.setOnClickListener(v -> {
+                if (overlayPageRef[0] != null && overlayPageRef[0].getParent() == wrapper) return;
+                View page = LiquidGlassAuthorPage.createPage(ctx, true, () -> {
+                    if (overlayPageRef[0] != null) {
+                        wrapper.removeView(overlayPageRef[0]);
+                        overlayPageRef[0] = null;
+                    }
+                }, () -> {
+                    Controller c = ACTIVE_CONTROLLER.get();
+                    if (c != null) c.onSettingsUpdated();
+                });
+                overlayPageRef[0] = page;
+                wrapper.addView(page, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+            });
 
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -252,279 +260,9 @@ public final class LiquidGlassTabBar {
         }
     }
 
-    private static SharedPreferences prefs(Context ctx) {
-        return ctx.getApplicationContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-    }
-
-    private static boolean isStackedMode(Context ctx) {
-        return prefs(ctx).getBoolean(KEY_STACKED_MODE, false);
-    }
-
-    private static boolean isScrollCollapseEnabled(Context ctx) {
-        return prefs(ctx).getBoolean(KEY_SCROLL_COLLAPSE, true);
-    }
-
-    private static float getGlassBlurDp(Context ctx) {
-        return prefs(ctx).getFloat(KEY_BLUR_DP, 4f);
-    }
-
-    private static void notifySettingsChanged() {
-        Controller c = ACTIVE_CONTROLLER.get();
-        if (c != null) c.onSettingsUpdated();
-    }
-
-    private static void showAuthorDialog(Context ctx) {
-        try {
-            float density = ctx.getResources().getDisplayMetrics().density;
-            LinearLayout root = new LinearLayout(ctx);
-            root.setOrientation(LinearLayout.VERTICAL);
-            int pad = Math.round(22f * density);
-            root.setPadding(pad, Math.round(20f * density), pad, Math.round(16f * density));
-
-            GradientDrawable cardBg = new GradientDrawable();
-            cardBg.setColor(Color.rgb(20, 20, 24));
-            cardBg.setCornerRadius(24f * density);
-            cardBg.setStroke(Math.round(1f * density), Color.argb(90, 255, 255, 255));
-            root.setBackground(cardBg);
-
-            TextView badge = new TextView(ctx);
-            badge.setText("DIGITALXIAO MOD");
-            badge.setTextColor(Color.rgb(255, 110, 40));
-            badge.setTextSize(11f);
-            badge.setTypeface(Typeface.DEFAULT_BOLD);
-            root.addView(badge);
-
-            TextView title = new TextView(ctx);
-            title.setText("SoundCloud Liquid Glass");
-            title.setTextColor(Color.WHITE);
-            title.setTextSize(20f);
-            title.setTypeface(Typeface.DEFAULT_BOLD);
-            title.setPadding(0, Math.round(4f * density), 0, Math.round(8f * density));
-            root.addView(title);
-
-            TextView desc = new TextView(ctx);
-            desc.setText("Ứng dụng được tùy biến giao diện Liquid Glass & phát triển bởi DigitalXiao.");
-            desc.setTextColor(Color.argb(215, 235, 235, 242));
-            desc.setTextSize(14f);
-            desc.setPadding(0, 0, 0, Math.round(16f * density));
-            root.addView(desc);
-
-            final AlertDialog dialog = new AlertDialog.Builder(ctx).setView(root).create();
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-            }
-
-            addActionPill(ctx, root, "TikTok: @digitalxiaoiu5", Color.rgb(34, 34, 42), v -> {
-                openUrl(ctx, "https://www.tiktok.com/@digitalxiaoiu5");
-                dialog.dismiss();
-            });
-            addActionPill(ctx, root, "Box Telegram: t.me/DigitalXiao", Color.rgb(26, 78, 122), v -> {
-                openUrl(ctx, "https://t.me/DigitalXiao");
-                dialog.dismiss();
-            });
-            addActionPill(ctx, root, "✦ Cài đặt TabBar Liquid Glass", Color.rgb(255, 85, 0), v -> {
-                dialog.dismiss();
-                showSettingsDialog(ctx);
-            });
-            addActionPill(ctx, root, "Đóng", Color.argb(40, 255, 255, 255), v -> dialog.dismiss());
-
-            dialog.show();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private static void showSettingsDialog(Context ctx) {
-        try {
-            float density = ctx.getResources().getDisplayMetrics().density;
-            SharedPreferences sp = prefs(ctx);
-
-            ScrollView scroll = new ScrollView(ctx);
-            LinearLayout root = new LinearLayout(ctx);
-            root.setOrientation(LinearLayout.VERTICAL);
-            int pad = Math.round(22f * density);
-            root.setPadding(pad, Math.round(20f * density), pad, Math.round(16f * density));
-
-            GradientDrawable cardBg = new GradientDrawable();
-            cardBg.setColor(Color.rgb(20, 20, 24));
-            cardBg.setCornerRadius(24f * density);
-            cardBg.setStroke(Math.round(1f * density), Color.argb(90, 255, 255, 255));
-            root.setBackground(cardBg);
-
-            TextView title = new TextView(ctx);
-            title.setText("Cài đặt TabBar Liquid Glass");
-            title.setTextColor(Color.WHITE);
-            title.setTextSize(19f);
-            title.setTypeface(Typeface.DEFAULT_BOLD);
-            title.setPadding(0, 0, 0, Math.round(14f * density));
-            root.addView(title);
-
-            final Switch[] collapseSwitchRef = new Switch[1];
-
-            // Switch 1: Stacked mode on scroll down
-            addSettingSwitch(
-                    ctx, root,
-                    "Xếp chồng khi vuốt xuống",
-                    "Ô nhạc xếp chồng lên TabBar (vẫn thấy mép dưới TabBar). Vuốt ô nhạc lên để ô nhạc bay lên rồi chui xuống dưới TabBar.",
-                    sp.getBoolean(KEY_STACKED_MODE, false),
-                    checked -> {
-                        SharedPreferences.Editor ed = sp.edit().putBoolean(KEY_STACKED_MODE, checked);
-                        if (checked) {
-                            ed.putBoolean(KEY_SCROLL_COLLAPSE, true);
-                            if (collapseSwitchRef[0] != null) collapseSwitchRef[0].setChecked(true);
-                        }
-                        ed.apply();
-                        notifySettingsChanged();
-                    }
-            );
-
-            // Switch 2: Auto collapse on scroll
-            collapseSwitchRef[0] = addSettingSwitch(
-                    ctx, root,
-                    "Tự thu gọn khi cuộn",
-                    "Tự kích hoạt chế độ thu gọn / xếp chồng khi cuộn xuống và mở lại khi cuộn lên.",
-                    sp.getBoolean(KEY_SCROLL_COLLAPSE, true),
-                    checked -> {
-                        sp.edit().putBoolean(KEY_SCROLL_COLLAPSE, checked).apply();
-                        notifySettingsChanged();
-                    }
-            );
-
-            // Blur presets
-            TextView blurLabel = new TextView(ctx);
-            blurLabel.setText("Độ mờ kính (Blur)");
-            blurLabel.setTextColor(Color.WHITE);
-            blurLabel.setTextSize(14f);
-            blurLabel.setTypeface(Typeface.DEFAULT_BOLD);
-            blurLabel.setPadding(0, Math.round(8f * density), 0, Math.round(8f * density));
-            root.addView(blurLabel);
-
-            LinearLayout blurRow = new LinearLayout(ctx);
-            blurRow.setOrientation(LinearLayout.HORIZONTAL);
-            float curBlur = sp.getFloat(KEY_BLUR_DP, 4f);
-            float[] blurVals = new float[]{4f, 8f, 14f};
-            String[] blurNames = new String[]{"Nhẹ (4dp)", "Vừa (8dp)", "Đậm (14dp)"};
-            TextView[] blurBtns = new TextView[3];
-            for (int i = 0; i < 3; i++) {
-                final int idx = i;
-                TextView b = new TextView(ctx);
-                b.setText(blurNames[i]);
-                b.setTextSize(12.5f);
-                b.setGravity(Gravity.CENTER);
-                b.setPadding(Math.round(8f * density), Math.round(10f * density), Math.round(8f * density), Math.round(10f * density));
-                LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-                if (i > 0) blp.leftMargin = Math.round(8f * density);
-                b.setLayoutParams(blp);
-                styleBlurChip(b, Math.abs(curBlur - blurVals[i]) < 1f, density);
-                b.setOnClickListener(v -> {
-                    sp.edit().putFloat(KEY_BLUR_DP, blurVals[idx]).apply();
-                    for (int j = 0; j < 3; j++) styleBlurChip(blurBtns[j], j == idx, density);
-                    notifySettingsChanged();
-                });
-                blurBtns[i] = b;
-                blurRow.addView(b);
-            }
-            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            rowLp.bottomMargin = Math.round(16f * density);
-            root.addView(blurRow, rowLp);
-
-            scroll.addView(root);
-            final AlertDialog dialog = new AlertDialog.Builder(ctx).setView(scroll).create();
-            if (dialog.getWindow() != null) {
-                dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-            }
-            addActionPill(ctx, root, "Xong", Color.rgb(255, 85, 0), v -> dialog.dismiss());
-            dialog.show();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private static void styleBlurChip(TextView tv, boolean active, float density) {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(14f * density);
-        bg.setColor(active ? Color.rgb(255, 85, 0) : Color.argb(40, 255, 255, 255));
-        tv.setBackground(bg);
-        tv.setTextColor(Color.WHITE);
-        tv.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-    }
-
-    private interface BoolConsumer {
-        void accept(boolean value);
-    }
-
-    private static Switch addSettingSwitch(Context ctx, LinearLayout parent, String title, String subtitle,
-                                           boolean initial, BoolConsumer onChange) {
-        float density = ctx.getResources().getDisplayMetrics().density;
-        LinearLayout row = new LinearLayout(ctx);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, Math.round(8f * density), 0, Math.round(12f * density));
-
-        LinearLayout textCol = new LinearLayout(ctx);
-        textCol.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        tlp.rightMargin = Math.round(12f * density);
-        textCol.setLayoutParams(tlp);
-
-        TextView tvTitle = new TextView(ctx);
-        tvTitle.setText(title);
-        tvTitle.setTextColor(Color.WHITE);
-        tvTitle.setTextSize(15f);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        textCol.addView(tvTitle);
-
-        TextView tvSub = new TextView(ctx);
-        tvSub.setText(subtitle);
-        tvSub.setTextColor(Color.argb(175, 220, 220, 230));
-        tvSub.setTextSize(12.5f);
-        tvSub.setPadding(0, Math.round(3f * density), 0, 0);
-        textCol.addView(tvSub);
-
-        Switch sw = new Switch(ctx);
-        sw.setChecked(initial);
-        sw.setOnCheckedChangeListener((buttonView, isChecked) -> onChange.accept(isChecked));
-
-        row.addView(textCol);
-        row.addView(sw);
-        parent.addView(row);
-        return sw;
-    }
-
-    private static void addActionPill(Context ctx, LinearLayout parent, String text, int color, View.OnClickListener onClick) {
-        float density = ctx.getResources().getDisplayMetrics().density;
-        TextView btn = new TextView(ctx);
-        btn.setText(text);
-        btn.setTextColor(Color.WHITE);
-        btn.setTextSize(14f);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setGravity(Gravity.CENTER);
-        btn.setPadding(Math.round(14f * density), Math.round(12f * density), Math.round(14f * density), Math.round(12f * density));
-
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(color);
-        bg.setCornerRadius(16f * density);
-        btn.setBackground(bg);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = Math.round(8f * density);
-        btn.setLayoutParams(lp);
-        btn.setOnClickListener(onClick);
-        parent.addView(btn);
-    }
-
-    private static void openUrl(Context ctx, String url) {
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            ctx.startActivity(intent);
-        } catch (Throwable ignored) {
-        }
-    }
-
     private LiquidGlassTabBar() {}
 
-    /** Clean vector icon drawable for the "Tác giả" (Author) tab slot. */
+    /** Symmetrically centered vector icon drawable for the "Tác giả" tab slot. */
     private static final class AuthorIconDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final float density;
@@ -546,8 +284,8 @@ public final class LiquidGlassTabBar {
             float cx = getBounds().centerX();
             float cy = getBounds().centerY();
             float r = Math.min(w, h) * 0.42f;
-            canvas.drawCircle(cx, cy - r * 0.35f, r * 0.36f, paint);
-            RectF arc = new RectF(cx - r * 0.72f, cy + r * 0.12f, cx + r * 0.72f, cy + r * 1.15f);
+            canvas.drawCircle(cx, cy - r * 0.34f, r * 0.34f, paint);
+            RectF arc = new RectF(cx - r * 0.68f, cy + r * 0.08f, cx + r * 0.68f, cy + r * 1.05f);
             canvas.drawArc(arc, 200f, 140f, false, paint);
         }
 
@@ -565,6 +303,9 @@ public final class LiquidGlassTabBar {
             Choreographer.FrameCallback,
             SensorEventListener {
 
+        // Active accent color inside the sliding Liquid Glass pill (like NPatch 151936.jpg!)
+        private static final int GLASS_ACTIVE_TINT = Color.rgb(255, 112, 46);
+
         private final ViewGroup bar;
         private final float density;
         private final float touchSlopSq;
@@ -579,9 +320,11 @@ public final class LiquidGlassTabBar {
         private RenderNode pillCombinedNode;
         private RenderNode pillGlassNode;
 
-        // Mini-player: TWO references!
-        // 1) miniPlayerSheet: the outer BottomSheet/FrameLayout sibling of bar (what moves in Y & Z)
-        // 2) miniPlayerPill: the inner 44..96dp footer pill (what receives Liquid Glass background & right margin)
+        // Full-screen Author page (mounted inside android.R.id.content below bar's Z-order)
+        private View authorPageView;
+        private boolean authorPageVisible = false;
+
+        // Mini-player dual references (outer BottomSheet + inner pill)
         private View miniPlayerSheet;
         private View miniPlayerPill;
         private RenderNode miniBackdropNode;
@@ -594,6 +337,7 @@ public final class LiquidGlassTabBar {
 
         private RuntimeShader outerLensShader;
         private RuntimeShader searchLensShader;
+        private RuntimeShader searchDispersionShader;
         private RuntimeShader pillDispersionShader;
         private RuntimeShader highlightShader;
 
@@ -608,12 +352,15 @@ public final class LiquidGlassTabBar {
         private long lastFrameNs = 0L;
         private boolean windowHooked = false;
 
-        // Settings cache
-        private boolean stackedMode = false;
+        // Live customization settings from LiquidGlassAuthorPage
+        private boolean globalGlassEnabled = false;
         private boolean scrollCollapseEnabled = true;
+        private float transparencyPct = 60f;
+        private float refractionDp = 24f;
         private float blurDp = 4f;
+        private float dispersionAmount = 0.5f;
 
-        // Author tab (repurposed from Search slot) + Right Search circle
+        // Author tab (5th slot) + Right Search circle
         private View authorTabView = null;
         private int authorTabVisibleIndex = -1;
         private int searchTabItemId = View.NO_ID;
@@ -643,32 +390,30 @@ public final class LiquidGlassTabBar {
         private float panelOffsetPx = 0f;
         private float rawOffsetAccum = 0f;
 
-        // Right Search/Menu circle press scale
-        private float searchBtnScale = 1f;
-        private float searchBtnScaleTarget = 1f;
-        private float searchBtnScaleVel = 0f;
+        // Right Search/Menu circle iOS 27 hold-to-glow + elastic drag state
         private boolean trackingSearchBtn = false;
+        private float searchDownX = 0f;
+        private float searchDownY = 0f;
+        private float searchPress = 0f;
+        private float searchPressTarget = 0f;
+        private float searchPressVel = 0f;
+        private float searchOffsetX = 0f;
+        private float searchOffsetY = 0f;
+        private float searchOffsetTargetX = 0f;
+        private float searchOffsetTargetY = 0f;
+        private float searchOffsetVelX = 0f;
+        private float searchOffsetVelY = 0f;
 
-        // Scroll-collapse spring state (0f = expanded, 1f = collapsed / stacked)
+        // Scroll-collapse spring state (0f = expanded, 1f = collapsed into right circle)
         private float collapseProgress = 0f;
         private float collapseTarget = 0f;
         private float collapseVel = 0f;
 
-        // Stacked mode 2-phase card-deck shuffle state
-        private boolean stackedMiniBehind = false;
-        private boolean shuffleAnimating = false;
-        private float shuffleProgress = 0f;
-        private float shuffleDir = 0f;
-
-        // Jitter-free Window-level scroll tracking
+        // Jitter-free scroll tracking
         private boolean scrollTracking = false;
         private float scrollAnchorY = 0f;
 
-        private boolean miniSwipeTracking = false;
-        private float miniSwipeStartY = 0f;
-        private float miniSwipeStartX = 0f;
-
-        // Direct TabBar touch state (intercepted at Window level so Mini-Player BottomSheet NEVER steals it)
+        // Direct TabBar touch state (Window-level interception)
         private boolean directBarCapture = false;
         private boolean trackingTouch = false;
         private boolean isDragging = false;
@@ -697,6 +442,7 @@ public final class LiquidGlassTabBar {
             if (Build.VERSION.SDK_INT >= 33) {
                 outerLensShader = new RuntimeShader(ROUNDED_RECT_REFRACTION_SHADER);
                 searchLensShader = new RuntimeShader(ROUNDED_RECT_REFRACTION_SHADER);
+                searchDispersionShader = new RuntimeShader(ROUNDED_RECT_REFRACTION_WITH_DISPERSION_SHADER);
                 pillDispersionShader = new RuntimeShader(ROUNDED_RECT_REFRACTION_WITH_DISPERSION_SHADER);
                 highlightShader = new RuntimeShader(INTERACTIVE_HIGHLIGHT_SHADER);
                 miniLensShader = new RuntimeShader(ROUNDED_RECT_REFRACTION_SHADER);
@@ -705,17 +451,19 @@ public final class LiquidGlassTabBar {
 
         private void loadSettings() {
             Context ctx = bar.getContext();
-            stackedMode = isStackedMode(ctx);
-            scrollCollapseEnabled = isScrollCollapseEnabled(ctx);
-            blurDp = getGlassBlurDp(ctx);
+            globalGlassEnabled = LiquidGlassAuthorPage.isGlobalGlassEnabled(ctx);
+            scrollCollapseEnabled = LiquidGlassAuthorPage.isScrollCollapseEnabled(ctx);
+            transparencyPct = LiquidGlassAuthorPage.getTransparencyPct(ctx);
+            refractionDp = LiquidGlassAuthorPage.getRefractionDp(ctx);
+            blurDp = LiquidGlassAuthorPage.getBlurDp(ctx);
+            dispersionAmount = LiquidGlassAuthorPage.getDispersion(ctx);
         }
 
         void onSettingsUpdated() {
             loadSettings();
-            collapseTarget = 0f;
-            stackedMiniBehind = false;
-            shuffleAnimating = false;
-            shuffleProgress = 0f;
+            if (!scrollCollapseEnabled) {
+                collapseTarget = 0f;
+            }
             scheduleFrame();
         }
 
@@ -796,11 +544,45 @@ public final class LiquidGlassTabBar {
             }
         }
 
+        private void showAuthorPage() {
+            View root = bar.getRootView();
+            if (root == null) return;
+            ViewGroup content = root.findViewById(android.R.id.content);
+            if (content == null) return;
+
+            if (authorPageView == null || authorPageView.getParent() != content) {
+                authorPageView = LiquidGlassAuthorPage.createPage(
+                        bar.getContext(),
+                        false,
+                        this::hideAuthorPage,
+                        this::onSettingsUpdated
+                );
+                // Place inside android.R.id.content, visually below the floating TabBar's Z (24dp)
+                authorPageView.setZ(dpf(12f));
+                content.addView(authorPageView, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            authorPageVisible = true;
+            authorPageView.setVisibility(View.VISIBLE);
+            authorPageView.setAlpha(0f);
+            authorPageView.animate().alpha(1f).setDuration(180L).start();
+            collapseTarget = 0f;
+            scheduleFrame();
+        }
+
+        private void hideAuthorPage() {
+            if (!authorPageVisible) return;
+            authorPageVisible = false;
+            if (authorPageView != null) {
+                authorPageView.setVisibility(View.GONE);
+            }
+        }
+
         private boolean isMiniPlayerCollapsedAndVisible() {
             if (miniPlayerPill == null || !miniPlayerPill.isShown() || miniPlayerPill.getWidth() <= 0) {
                 return false;
             }
-            // If full-screen player is open, miniPlayerSheet top is near 0 (top half of screen)
             if (miniPlayerSheet != null && miniPlayerSheet.isShown()) {
                 View root = bar.getRootView();
                 int rootH = root != null ? root.getHeight() : 0;
@@ -834,7 +616,6 @@ public final class LiquidGlassTabBar {
             float localX = rawX - barLoc[0];
             float localY = rawY - barLoc[1];
 
-            // 1. Continue an active direct TabBar / Search button gesture
             if (directBarCapture) {
                 handleDirectBarTouch(action, localX, localY);
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
@@ -843,28 +624,6 @@ public final class LiquidGlassTabBar {
                 return true;
             }
 
-            boolean miniVisible = isMiniPlayerCollapsedAndVisible();
-
-            // 2. Stacked Mode: detect upward swipe on Mini-Player while it is stacked on top of TabBar
-            if (stackedMode && collapseProgress > 0.55f && !stackedMiniBehind && !shuffleAnimating && miniVisible) {
-                if (action == MotionEvent.ACTION_DOWN && isTouchInsideView(miniPlayerPill, rawX, rawY)) {
-                    miniSwipeTracking = true;
-                    miniSwipeStartX = rawX;
-                    miniSwipeStartY = rawY;
-                } else if (miniSwipeTracking && action == MotionEvent.ACTION_MOVE) {
-                    float dy = rawY - miniSwipeStartY;
-                    float dx = rawX - miniSwipeStartX;
-                    if (dy < -dpf(18f) && Math.abs(dy) > Math.abs(dx) * 1.1f) {
-                        miniSwipeTracking = false;
-                        startCardShuffle(true);
-                        return true;
-                    }
-                } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                    miniSwipeTracking = false;
-                }
-            }
-
-            // 3. Direct capture on TabBar / right Search-Menu circle (BEFORE Mini-Player BottomSheet sees it)
             if (action == MotionEvent.ACTION_DOWN && isTouchInsideView(bar, rawX, rawY)) {
                 boolean onRightCircle = isInsideSearchCircle(localX, localY);
                 boolean onLeftPill = localX >= outerRect.left - dpf(4f) && localX <= outerRect.right + dpf(4f)
@@ -877,14 +636,8 @@ public final class LiquidGlassTabBar {
                 }
 
                 if (onLeftPill) {
-                    if (!stackedMode && collapseProgress > 0.5f) {
-                        // Replace mode & collapsed: pass touch to the dropped Mini-Player!
-                        return false;
-                    }
-                    if (stackedMode && collapseProgress > 0.5f && !stackedMiniBehind
-                            && miniVisible && isTouchInsideView(miniPlayerPill, rawX, rawY)) {
-                        // Stacked mode & Mini-Player on top: let Mini-Player handle touches on itself,
-                        // while bottom peek below Mini-Player still reaches TabBar!
+                    if (collapseProgress > 0.5f) {
+                        // Collapsed: pass touch through to the dropped Mini-Player
                         return false;
                     }
                     directBarCapture = true;
@@ -893,8 +646,9 @@ public final class LiquidGlassTabBar {
                 }
             }
 
-            // 4. Jitter-free vertical scroll detection (uses anchor Y instead of per-frame dy)
-            if (scrollCollapseEnabled) {
+            // Jitter-free vertical scroll detection (skip when on Author page so sliders drag smoothly!)
+            if (scrollCollapseEnabled && !authorPageVisible) {
+                boolean miniVisible = isMiniPlayerCollapsedAndVisible();
                 switch (action) {
                     case MotionEvent.ACTION_DOWN:
                         if (isTouchInsideView(bar, rawX, rawY) || (miniVisible && isTouchInsideView(miniPlayerPill, rawX, rawY))) {
@@ -908,23 +662,15 @@ public final class LiquidGlassTabBar {
                         if (scrollTracking) {
                             float totalDy = rawY - scrollAnchorY;
                             if (totalDy < -dpf(28f)) {
-                                // Finger swiped UP -> scrolling DOWN -> collapse / stack
                                 scrollAnchorY = rawY;
                                 if (collapseTarget < 0.5f) {
                                     collapseTarget = 1f;
-                                    stackedMiniBehind = false;
-                                    shuffleAnimating = false;
-                                    shuffleProgress = 0f;
                                     scheduleFrame();
                                 }
                             } else if (totalDy > dpf(24f)) {
-                                // Finger swiped DOWN -> scrolling UP -> expand back
                                 scrollAnchorY = rawY;
-                                if (collapseTarget > 0.5f || stackedMiniBehind) {
+                                if (collapseTarget > 0.5f) {
                                     collapseTarget = 0f;
-                                    stackedMiniBehind = false;
-                                    shuffleAnimating = false;
-                                    shuffleProgress = 0f;
                                     scheduleFrame();
                                 }
                             }
@@ -940,51 +686,51 @@ public final class LiquidGlassTabBar {
             return false;
         }
 
-        private void startCardShuffle(boolean toBehind) {
-            shuffleAnimating = true;
-            shuffleDir = toBehind ? 1f : -1f;
-            if (toBehind) {
-                shuffleProgress = 0f;
-                stackedMiniBehind = false;
-            } else {
-                shuffleProgress = 1f;
-                stackedMiniBehind = true;
-            }
-            scheduleFrame();
-        }
-
         private void handleDirectBarTouch(int action, float x, float y) {
+            // === Right Separated Search / Menu Circle (iOS 27 Hold-to-Glow + Elastic Rubber-Band Drag) ===
             if (action == MotionEvent.ACTION_DOWN && isInsideSearchCircle(x, y)) {
                 trackingSearchBtn = true;
-                searchBtnScaleTarget = 1.15f;
+                searchDownX = x;
+                searchDownY = y;
+                searchPressTarget = 1f;
+                searchOffsetTargetX = 0f;
+                searchOffsetTargetY = 0f;
                 scheduleFrame();
                 return;
             }
             if (trackingSearchBtn) {
-                if (action == MotionEvent.ACTION_UP) {
+                if (action == MotionEvent.ACTION_MOVE) {
+                    float dx = x - searchDownX;
+                    float dy = y - searchDownY;
+                    float maxDrag = dpf(18f);
+                    float fx = Math.max(-1f, Math.min(1f, dx / dpf(60f)));
+                    float fy = Math.max(-1f, Math.min(1f, dy / dpf(60f)));
+                    float ex = 1f - (1f - Math.abs(fx)) * (1f - Math.abs(fx));
+                    float ey = 1f - (1f - Math.abs(fy)) * (1f - Math.abs(fy));
+                    searchOffsetTargetX = maxDrag * Math.signum(fx) * ex;
+                    searchOffsetTargetY = maxDrag * Math.signum(fy) * ey;
+                    scheduleFrame();
+                    return;
+                }
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     trackingSearchBtn = false;
-                    searchBtnScaleTarget = 1f;
-                    if (isInsideSearchCircle(x, y)) {
-                        if (!stackedMode && (collapseProgress > 0.4f || collapseTarget > 0.5f)) {
+                    searchPressTarget = 0f;
+                    searchOffsetTargetX = 0f;
+                    searchOffsetTargetY = 0f;
+                    if (action == MotionEvent.ACTION_UP) {
+                        if (collapseProgress > 0.4f || collapseTarget > 0.5f) {
                             collapseTarget = 0f;
-                        } else if (stackedMode && (collapseProgress > 0.4f || stackedMiniBehind)) {
-                            collapseTarget = 0f;
-                            stackedMiniBehind = false;
-                            shuffleAnimating = false;
-                            shuffleProgress = 0f;
                         } else {
+                            hideAuthorPage();
                             triggerSearchTab();
                         }
                     }
-                    scheduleFrame();
-                } else if (action == MotionEvent.ACTION_CANCEL) {
-                    trackingSearchBtn = false;
-                    searchBtnScaleTarget = 1f;
                     scheduleFrame();
                 }
                 return;
             }
 
+            // === Left Floating Liquid Glass TabBar ===
             syncTabState(false);
             int count = visibleTabs.size();
             if (count <= 0) return;
@@ -1044,16 +790,14 @@ public final class LiquidGlassTabBar {
 
                     if (action == MotionEvent.ACTION_UP) {
                         int clickIdx = isDragging ? target : touchDownTargetIndex;
+                        currentIndex = clickIdx;
+                        springTarget = clickIdx;
+                        collapseTarget = 0f;
                         if (clickIdx == authorTabVisibleIndex) {
-                            springTarget = currentIndex;
-                            showAuthorDialog(bar.getContext());
+                            searchTabSelected = false;
+                            showAuthorPage();
                         } else {
-                            currentIndex = clickIdx;
-                            springTarget = clickIdx;
-                            collapseTarget = 0f;
-                            stackedMiniBehind = false;
-                            shuffleAnimating = false;
-                            shuffleProgress = 0f;
+                            hideAuthorPage();
                             dispatchTabClick(clickIdx);
                         }
                     } else {
@@ -1147,7 +891,6 @@ public final class LiquidGlassTabBar {
             View anchor = findMiniPlayerAnchor(content);
             if (anchor == null) return;
 
-            // 1. Walk up from PlayPauseButton / footer_like_button to find the 40..96dp pill container
             View pill = null;
             ViewParent p = anchor.getParent();
             while (p instanceof View) {
@@ -1162,7 +905,6 @@ public final class LiquidGlassTabBar {
             }
             if (pill == null || pill == bar) return;
 
-            // 2. Walk up from pill to find the outer BottomSheet container (sibling/cousin of bar in CoordinatorLayout)
             View sheet = pill;
             ViewParent barParent = bar.getParent();
             ViewParent sp = pill.getParent();
@@ -1173,9 +915,7 @@ public final class LiquidGlassTabBar {
                     sheet = sv;
                     break;
                 }
-                if (sv.getClass().getName().contains("CoordinatorLayout")) {
-                    break;
-                }
+                if (sv.getClass().getName().contains("CoordinatorLayout")) break;
                 sheet = sv;
                 sp = sv.getParent();
                 depth++;
@@ -1196,7 +936,6 @@ public final class LiquidGlassTabBar {
                 miniOrigRightMargin = ((ViewGroup.MarginLayoutParams) pill.getLayoutParams()).rightMargin;
             }
 
-            // Disable clipping on mini-player ancestors so stacked lift-and-tuck never clips
             ViewParent ap = pill.getParent();
             int d = 0;
             while (ap instanceof ViewGroup && d < 8) {
@@ -1208,14 +947,13 @@ public final class LiquidGlassTabBar {
         }
 
         private View findMiniPlayerAnchor(View v) {
-            if (v == null || v == bar) return null;
+            if (v == null || v == bar || v == authorPageView) return null;
             String cls = v.getClass().getName();
             if (cls.endsWith("PlayPauseButton") && v.isShown()) {
                 int[] loc = new int[2];
                 v.getLocationOnScreen(loc);
                 View root = bar.getRootView();
                 int rootH = root != null ? root.getHeight() : 0;
-                // Only match the bottom mini-player's PlayPauseButton (lower third of screen)
                 if (rootH > 0 && loc[1] > rootH * 0.65f) {
                     return v;
                 }
@@ -1356,16 +1094,17 @@ public final class LiquidGlassTabBar {
             }
         }
 
-        /**
-         * Locks BottomNavigationMenuView strictly to [16dp .. barW - 82dp] using LEFT gravity + explicit width,
-         * eliminating the FrameLayout CENTER_HORIZONTAL margin-shift bug that pushed "Khám phá" off-screen!
-         */
         private void ensureMenuBounds(ViewGroup menu) {
             int barW = bar.getWidth();
             if (barW <= 0) return;
 
+            // Remove any internal padding so all 5 tabs distribute symmetrically inside [16dp .. barW - 82dp]
+            if (menu.getPaddingLeft() != 0 || menu.getPaddingRight() != 0) {
+                menu.setPadding(0, menu.getPaddingTop(), 0, menu.getPaddingBottom());
+            }
+
             int leftMargin = dp(16f);
-            int rightReserve = dp(12f + 56f + 10f + 4f); // 82dp (12 right margin + 56 circle + 10 gap + 4 pill inset)
+            int rightReserve = dp(12f + 56f + 10f + 4f); // 82dp
             int targetW = Math.max(dp(120f), barW - leftMargin - rightReserve);
 
             ViewGroup.LayoutParams rawLp = menu.getLayoutParams();
@@ -1416,7 +1155,7 @@ public final class LiquidGlassTabBar {
             }
             if (authorTabView != null) {
                 styleAsAuthorTab(authorTabView);
-                searchTabSelected = isTabViewSelected(authorTabView);
+                searchTabSelected = !authorPageVisible && isTabViewSelected(authorTabView);
             }
 
             visibleTabs.clear();
@@ -1444,7 +1183,8 @@ public final class LiquidGlassTabBar {
                     ));
                     if (child == authorTabView) {
                         authorTabVisibleIndex = visIdx;
-                    } else if (isTabViewSelected(child)) {
+                        if (authorPageVisible) selected = visIdx;
+                    } else if (!authorPageVisible && isTabViewSelected(child)) {
                         selected = visIdx;
                     }
                 }
@@ -1490,9 +1230,7 @@ public final class LiquidGlassTabBar {
             float bestDist = Float.MAX_VALUE;
             for (int i = 0; i < count; i++) {
                 RectF r = tabRects.get(i);
-                if (x >= r.left && x <= r.right) {
-                    return i;
-                }
+                if (x >= r.left && x <= r.right) return i;
                 float dist = Math.abs(x - r.centerX());
                 if (dist < bestDist) {
                     bestDist = dist;
@@ -1510,7 +1248,7 @@ public final class LiquidGlassTabBar {
         }
 
         private boolean isInsideSearchCircle(float x, float y) {
-            float pad = dpf(6f);
+            float pad = dpf(8f);
             return x >= searchRect.left - pad && x <= searchRect.right + pad
                     && y >= searchRect.top - pad && y <= searchRect.bottom + pad;
         }
@@ -1566,84 +1304,29 @@ public final class LiquidGlassTabBar {
             ViewGroup menu = getMenuView();
             boolean miniActive = isMiniPlayerCollapsedAndVisible();
 
-            if (!stackedMode) {
-                // === MODE 1: REPLACE ===
-                // Left TabBar collapses into the right Search circle (morphs to Menu);
-                // Mini-Player drops into the TabBar's left row.
-                bar.setZ(dpf(24f));
-                if (menu != null) {
-                    float shiftX = (searchRect.centerX() - outerRect.centerX()) * p;
-                    menu.setPivotX(menu.getWidth() * 0.5f);
-                    menu.setPivotY(menu.getHeight() * 0.5f);
-                    menu.setTranslationX(shiftX);
-                    menu.setTranslationY(0f);
-                    float ms = 1f - 0.65f * p;
-                    menu.setScaleX(ms);
-                    menu.setScaleY(ms);
-                    menu.setAlpha(Math.max(0f, 1f - p * 1.4f));
-                }
-                if (miniActive && miniPlayerSheet != null) {
-                    miniPlayerSheet.setZ(dpf(18f));
-                    miniPlayerSheet.setScaleX(1f);
-                    miniPlayerSheet.setScaleY(1f);
-                    miniPlayerSheet.setAlpha(1f);
-                    float dropDist = outerRect.height() > 0f ? outerRect.height() + dpf(8f) : dpf(66f);
-                    miniPlayerSheet.setTranslationY(p * dropDist);
-                    updateMiniRightMargin(Math.round(dpf(56f + 10f) * p));
-                } else if (miniPlayerSheet != null) {
-                    miniPlayerSheet.setTranslationY(0f);
-                    updateMiniRightMargin(0);
-                }
-            } else {
-                // === MODE 2: STACKED CARD DECK ("Xếp chồng khi vuốt xuống") ===
-                // Mini-Player drops ON TOP of TabBar, leaving ~16dp of TabBar's bottom peeking out!
-                // Swiping UP on Mini-Player plays 2-phase animation: lifts UP (-52dp) -> Z swap -> tucks UNDER TabBar!
-                float sh = Math.max(0f, Math.min(1f, shuffleProgress));
-                boolean miniOnTop = (sh < 0.5f);
-
-                if (menu != null) {
-                    menu.setTranslationX(0f);
-                    menu.setTranslationY(0f);
-                    float barScale = miniOnTop ? (1f - 0.05f * p) : (0.95f + 0.05f * ((sh - 0.5f) * 2f));
-                    menu.setPivotX(menu.getWidth() * 0.5f);
-                    menu.setPivotY(menu.getHeight() * 0.5f);
-                    menu.setScaleX(barScale);
-                    menu.setScaleY(barScale);
-                    menu.setAlpha(1f);
-                }
-
-                if (miniActive && miniPlayerSheet != null) {
-                    updateMiniRightMargin(0);
-                    float stackedDrop = outerRect.height() > 0f ? (outerRect.height() - dpf(16f)) : dpf(44f);
-                    float baseTy = p * stackedDrop;
-
-                    float arcLift = (float) Math.sin(sh * Math.PI) * -dpf(52f);
-                    float tuckedOffset = (sh > 0.5f) ? ((sh - 0.5f) * 2f) * (-dpf(8f)) : 0f;
-                    float miniScale = (sh <= 0.5f)
-                            ? (1f - 0.04f * (sh * 2f))
-                            : (0.96f - 0.04f * ((sh - 0.5f) * 2f));
-
-                    miniPlayerSheet.setTranslationY(baseTy + arcLift + tuckedOffset);
-                    miniPlayerSheet.setScaleX(miniScale);
-                    miniPlayerSheet.setScaleY(miniScale);
-                    miniPlayerSheet.setAlpha(sh > 0.5f ? (1f - 0.18f * ((sh - 0.5f) * 2f)) : 1f);
-
-                    if (p > 0.05f && miniOnTop) {
-                        miniPlayerSheet.setZ(dpf(32f));
-                        bar.setZ(dpf(18f));
-                    } else {
-                        bar.setZ(dpf(32f));
-                        miniPlayerSheet.setZ(dpf(14f));
-                    }
-                } else {
-                    bar.setZ(dpf(24f));
-                    if (miniPlayerSheet != null) {
-                        miniPlayerSheet.setTranslationY(0f);
-                        miniPlayerSheet.setScaleX(1f);
-                        miniPlayerSheet.setScaleY(1f);
-                        miniPlayerSheet.setAlpha(1f);
-                    }
-                }
+            bar.setZ(dpf(24f));
+            if (menu != null) {
+                float shiftX = (searchRect.centerX() - outerRect.centerX()) * p;
+                menu.setPivotX(menu.getWidth() * 0.5f);
+                menu.setPivotY(menu.getHeight() * 0.5f);
+                menu.setTranslationX(shiftX);
+                menu.setTranslationY(0f);
+                float ms = 1f - 0.65f * p;
+                menu.setScaleX(ms);
+                menu.setScaleY(ms);
+                menu.setAlpha(Math.max(0f, 1f - p * 1.4f));
+            }
+            if (miniActive && miniPlayerSheet != null) {
+                miniPlayerSheet.setZ(dpf(18f));
+                miniPlayerSheet.setScaleX(1f);
+                miniPlayerSheet.setScaleY(1f);
+                miniPlayerSheet.setAlpha(1f);
+                float dropDist = outerRect.height() > 0f ? outerRect.height() + dpf(8f) : dpf(66f);
+                miniPlayerSheet.setTranslationY(p * dropDist);
+                updateMiniRightMargin(Math.round(dpf(56f + 10f) * p));
+            } else if (miniPlayerSheet != null) {
+                miniPlayerSheet.setTranslationY(0f);
+                updateMiniRightMargin(0);
             }
         }
 
@@ -1695,25 +1378,21 @@ public final class LiquidGlassTabBar {
             collapseVel = s4[1];
             if (Math.abs(collapseProgress - collapseTarget) > 0.002f || Math.abs(collapseVel) > 0.005f) moving = true;
 
-            float[] s5 = stepSpring(searchBtnScale, searchBtnScaleVel, searchBtnScaleTarget, 420f, 0.7f, dt);
-            searchBtnScale = s5[0];
-            searchBtnScaleVel = s5[1];
-            if (Math.abs(searchBtnScale - searchBtnScaleTarget) > 0.002f || Math.abs(searchBtnScaleVel) > 0.005f) moving = true;
+            // Right Search/Menu button iOS 27 spring (press glow + elastic X/Y drag)
+            float[] s5 = stepSpring(searchPress, searchPressVel, searchPressTarget, 480f, 0.72f, dt);
+            searchPress = Math.max(0f, Math.min(1f, s5[0]));
+            searchPressVel = s5[1];
+            if (Math.abs(searchPress - searchPressTarget) > 0.002f || Math.abs(searchPressVel) > 0.005f) moving = true;
 
-            if (shuffleAnimating) {
-                shuffleProgress += shuffleDir * (dt / 0.44f);
-                if (shuffleDir > 0f && shuffleProgress >= 1f) {
-                    shuffleProgress = 1f;
-                    shuffleAnimating = false;
-                    stackedMiniBehind = true;
-                } else if (shuffleDir < 0f && shuffleProgress <= 0f) {
-                    shuffleProgress = 0f;
-                    shuffleAnimating = false;
-                    stackedMiniBehind = false;
-                } else {
-                    moving = true;
-                }
-            }
+            float[] s6 = stepSpring(searchOffsetX, searchOffsetVelX, searchOffsetTargetX, 340f, 0.68f, dt);
+            searchOffsetX = s6[0];
+            searchOffsetVelX = s6[1];
+            if (Math.abs(searchOffsetX - searchOffsetTargetX) > 0.1f || Math.abs(searchOffsetVelX) > 0.5f) moving = true;
+
+            float[] s7 = stepSpring(searchOffsetY, searchOffsetVelY, searchOffsetTargetY, 340f, 0.68f, dt);
+            searchOffsetY = s7[0];
+            searchOffsetVelY = s7[1];
+            if (Math.abs(searchOffsetY - searchOffsetTargetY) > 0.1f || Math.abs(searchOffsetVelY) > 0.5f) moving = true;
 
             applyCollapseTransforms();
             bar.invalidate();
@@ -1736,6 +1415,14 @@ public final class LiquidGlassTabBar {
             if (capturing || !attached) return true;
             syncTabState(false);
             locateAndStyleMiniPlayer();
+
+            if (globalGlassEnabled) {
+                View root = bar.getRootView();
+                View content = root != null ? root.findViewById(android.R.id.content) : null;
+                LiquidGlassControls.GlobalLiquidGlassStyler.applyIfEnabled(
+                        content, bar, miniPlayerPill, authorPageView, true);
+            }
+
             if (Build.VERSION.SDK_INT < 29) return true;
             if (bar.getWidth() > 0 && bar.getHeight() > 0) {
                 captureBackdropFor(bar, true);
@@ -1766,9 +1453,7 @@ public final class LiquidGlassTabBar {
             if (view instanceof ViewGroup) {
                 ViewGroup vg = (ViewGroup) view;
                 Drawable bg = vg.getBackground();
-                if (bg != null) {
-                    bg.draw(c);
-                }
+                if (bg != null) bg.draw(c);
                 int count = vg.getChildCount();
                 for (int i = 0; i < count; i++) {
                     View child = vg.getChildAt(i);
@@ -1903,6 +1588,12 @@ public final class LiquidGlassTabBar {
             outWidth[0] = r0.width() + (r1.width() - r0.width()) * t;
         }
 
+        private int computeSurfaceTintAlpha(boolean dark) {
+            // transparencyPct: 0% = opaque frosted (alpha 210), 100% = ultra-clear crystal (alpha 20)
+            float op = Math.max(0f, Math.min(1f, 1f - transparencyPct / 100f));
+            return Math.round(20f + op * (dark ? 185f : 195f));
+        }
+
         private boolean isDarkTheme() {
             int mode = bar.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
             return mode == Configuration.UI_MODE_NIGHT_YES;
@@ -1944,27 +1635,28 @@ public final class LiquidGlassTabBar {
                 if (Build.VERSION.SDK_INT >= 33 && miniBackdropNode != null
                         && miniBackdropNode.hasDisplayList() && miniLensShader != null
                         && canvas.isHardwareAccelerated()) {
-                    if (miniGlassNode == null) {
-                        miniGlassNode = new RenderNode("sc_mini_glass");
-                    }
+                    if (miniGlassNode == null) miniGlassNode = new RenderNode("sc_mini_glass");
                     miniGlassNode.setPosition(0, 0, w, h);
 
                     ColorMatrix cm = new ColorMatrix();
                     cm.setSaturation(1.5f);
-                    RenderEffect vibrancyEffect = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
-                    float blurPx = dpf(blurDp);
-                    RenderEffect blurEffect = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP);
-
-                    miniLensShader.setFloatUniform("size", miniRect.width(), miniRect.height());
-                    miniLensShader.setFloatUniform("offset", -miniRect.left, -miniRect.top);
-                    miniLensShader.setFloatUniform("cornerRadii", new float[]{radius, radius, radius, radius});
-                    miniLensShader.setFloatUniform("refractionHeight", dpf(18f));
-                    miniLensShader.setFloatUniform("refractionAmount", -dpf(18f));
-                    miniLensShader.setFloatUniform("depthEffect", 0f);
-                    RenderEffect lensEffect = RenderEffect.createRuntimeShaderEffect(miniLensShader, "content");
-
-                    RenderEffect chain = RenderEffect.createChainEffect(lensEffect,
-                            RenderEffect.createChainEffect(blurEffect, vibrancyEffect));
+                    RenderEffect chain = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
+                    if (blurDp > 0.2f) {
+                        float blurPx = dpf(blurDp);
+                        chain = RenderEffect.createChainEffect(
+                                RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP), chain);
+                    }
+                    if (refractionDp > 0.5f) {
+                        float refPx = dpf(refractionDp * 0.75f);
+                        miniLensShader.setFloatUniform("size", miniRect.width(), miniRect.height());
+                        miniLensShader.setFloatUniform("offset", -miniRect.left, -miniRect.top);
+                        miniLensShader.setFloatUniform("cornerRadii", new float[]{radius, radius, radius, radius});
+                        miniLensShader.setFloatUniform("refractionHeight", refPx);
+                        miniLensShader.setFloatUniform("refractionAmount", -refPx);
+                        miniLensShader.setFloatUniform("depthEffect", 0f);
+                        chain = RenderEffect.createChainEffect(
+                                RenderEffect.createRuntimeShaderEffect(miniLensShader, "content"), chain);
+                    }
                     miniGlassNode.setRenderEffect(chain);
 
                     Canvas gc = miniGlassNode.beginRecording(w, h);
@@ -1976,7 +1668,8 @@ public final class LiquidGlassTabBar {
                     canvas.drawRenderNode(miniGlassNode);
                 }
 
-                surfacePaint.setColor(dark ? Color.argb(102, 24, 24, 28) : Color.argb(115, 245, 247, 252));
+                int surfAlpha = computeSurfaceTintAlpha(dark);
+                surfacePaint.setColor(dark ? Color.argb(surfAlpha, 24, 24, 28) : Color.argb(surfAlpha, 245, 247, 252));
                 canvas.drawRoundRect(miniRect, radius, radius, surfacePaint);
                 canvas.restore();
 
@@ -1992,6 +1685,7 @@ public final class LiquidGlassTabBar {
             private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint surfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final RectF animOuterRect = new RectF();
+            private final RectF animSearchRect = new RectF();
 
             @Override
             public void draw(Canvas canvas) {
@@ -2000,9 +1694,12 @@ public final class LiquidGlassTabBar {
                 if (outerRect.width() <= 0f || outerRect.height() <= 0f) return;
 
                 boolean dark = isDarkTheme();
-                float p = stackedMode ? 0f : Math.max(0f, Math.min(1f, collapseProgress));
+                int surfAlpha = computeSurfaceTintAlpha(dark);
+                float p = Math.max(0f, Math.min(1f, collapseProgress));
 
                 // 1. Left TabBar Liquid Glass Pill
+                // NPatch Effect #1 (from 151936.jpg): When holding/dragging (pressProgress > 0),
+                // the outer background bar subtly shrinks vertically while the tab logos stay 1.0x!
                 if (p < 0.98f) {
                     float left = outerRect.left + (searchRect.left - outerRect.left) * p;
                     float right = outerRect.right + (searchRect.right - outerRect.right) * p;
@@ -2012,10 +1709,12 @@ public final class LiquidGlassTabBar {
                     float radius = animOuterRect.height() * 0.5f;
                     float alphaMult = Math.max(0f, 1f - p * 1.15f);
 
-                    float outerScale = 1f + (dpf(16f) / Math.max(1f, animOuterRect.width())) * pressProgress;
+                    float bgScaleX = 1f - 0.015f * pressProgress;
+                    float bgScaleY = 1f - 0.09f * pressProgress;
+
                     canvas.save();
                     if (pressProgress > 0.001f) {
-                        canvas.scale(outerScale, outerScale, animOuterRect.centerX(), animOuterRect.centerY());
+                        canvas.scale(bgScaleX, bgScaleY, animOuterRect.centerX(), animOuterRect.centerY());
                     }
 
                     shadowPaint.setColor(Color.TRANSPARENT);
@@ -2030,9 +1729,7 @@ public final class LiquidGlassTabBar {
 
                     if (Build.VERSION.SDK_INT >= 33 && backdropNode != null
                             && backdropNode.hasDisplayList() && canvas.isHardwareAccelerated()) {
-                        if (outerGlassNode == null) {
-                            outerGlassNode = new RenderNode("sc_outer_glass");
-                        }
+                        if (outerGlassNode == null) outerGlassNode = new RenderNode("sc_outer_glass");
                         int w = bar.getWidth();
                         int h = bar.getHeight();
                         outerGlassNode.setPosition(0, 0, w, h);
@@ -2040,20 +1737,23 @@ public final class LiquidGlassTabBar {
 
                         ColorMatrix cm = new ColorMatrix();
                         cm.setSaturation(1.5f);
-                        RenderEffect vibrancyEffect = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
-                        float blurPx = dpf(blurDp);
-                        RenderEffect blurEffect = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP);
-
-                        outerLensShader.setFloatUniform("size", animOuterRect.width(), animOuterRect.height());
-                        outerLensShader.setFloatUniform("offset", -animOuterRect.left, -animOuterRect.top);
-                        outerLensShader.setFloatUniform("cornerRadii", new float[]{radius, radius, radius, radius});
-                        outerLensShader.setFloatUniform("refractionHeight", dpf(24f));
-                        outerLensShader.setFloatUniform("refractionAmount", -dpf(24f));
-                        outerLensShader.setFloatUniform("depthEffect", 0f);
-                        RenderEffect lensEffect = RenderEffect.createRuntimeShaderEffect(outerLensShader, "content");
-
-                        RenderEffect chain = RenderEffect.createChainEffect(lensEffect,
-                                RenderEffect.createChainEffect(blurEffect, vibrancyEffect));
+                        RenderEffect chain = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
+                        if (blurDp > 0.2f) {
+                            float blurPx = dpf(blurDp);
+                            chain = RenderEffect.createChainEffect(
+                                    RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP), chain);
+                        }
+                        if (refractionDp > 0.5f) {
+                            float refPx = dpf(refractionDp);
+                            outerLensShader.setFloatUniform("size", animOuterRect.width(), animOuterRect.height());
+                            outerLensShader.setFloatUniform("offset", -animOuterRect.left, -animOuterRect.top);
+                            outerLensShader.setFloatUniform("cornerRadii", new float[]{radius, radius, radius, radius});
+                            outerLensShader.setFloatUniform("refractionHeight", refPx);
+                            outerLensShader.setFloatUniform("refractionAmount", -refPx);
+                            outerLensShader.setFloatUniform("depthEffect", 0f);
+                            chain = RenderEffect.createChainEffect(
+                                    RenderEffect.createRuntimeShaderEffect(outerLensShader, "content"), chain);
+                        }
                         outerGlassNode.setRenderEffect(chain);
 
                         Canvas gc = outerGlassNode.beginRecording(w, h);
@@ -2066,8 +1766,8 @@ public final class LiquidGlassTabBar {
                     }
 
                     surfacePaint.setColor(dark
-                            ? Color.argb(Math.round(102 * alphaMult), 24, 24, 28)
-                            : Color.argb(Math.round(115 * alphaMult), 245, 247, 252));
+                            ? Color.argb(Math.round(surfAlpha * alphaMult), 24, 24, 28)
+                            : Color.argb(Math.round(surfAlpha * alphaMult), 245, 247, 252));
                     canvas.drawRoundRect(animOuterRect, radius, radius, surfacePaint);
                     canvas.restore();
 
@@ -2075,50 +1775,66 @@ public final class LiquidGlassTabBar {
                     canvas.restore();
                 }
 
-                // 2. Right Separated Liquid Glass Circle Button (Search <-> Menu)
+                // 2. Right Separated Liquid Glass Circle Button (iOS 27 Hold-to-Glow + Elastic Drag)
                 if (searchRect.width() > 0f) {
-                    float cr = searchRect.height() * 0.5f;
+                    animSearchRect.set(searchRect);
+                    animSearchRect.offset(searchOffsetX, searchOffsetY);
+                    float cr = animSearchRect.height() * 0.5f;
+                    float btnScale = 1f + 0.26f * searchPress;
+
                     canvas.save();
-                    if (Math.abs(searchBtnScale - 1f) > 0.002f) {
-                        canvas.scale(searchBtnScale, searchBtnScale, searchRect.centerX(), searchRect.centerY());
+                    if (Math.abs(btnScale - 1f) > 0.002f) {
+                        canvas.scale(btnScale, btnScale, animSearchRect.centerX(), animSearchRect.centerY());
                     }
 
                     shadowPaint.setColor(Color.TRANSPARENT);
-                    shadowPaint.setShadowLayer(dpf(10f), 0f, dpf(3f),
-                            Color.argb(dark ? 56 : 28, 0, 0, 0));
-                    canvas.drawRoundRect(searchRect, cr, cr, shadowPaint);
+                    shadowPaint.setShadowLayer(dpf(10f + 6f * searchPress), 0f, dpf(3f),
+                            Color.argb(dark ? 62 : 30, 0, 0, 0));
+                    canvas.drawRoundRect(animSearchRect, cr, cr, shadowPaint);
 
                     canvas.save();
                     clipPath.reset();
-                    clipPath.addRoundRect(searchRect, cr, cr, Path.Direction.CW);
+                    clipPath.addRoundRect(animSearchRect, cr, cr, Path.Direction.CW);
                     canvas.clipPath(clipPath);
 
                     if (Build.VERSION.SDK_INT >= 33 && backdropNode != null
                             && backdropNode.hasDisplayList() && searchLensShader != null
                             && canvas.isHardwareAccelerated()) {
-                        if (searchGlassNode == null) {
-                            searchGlassNode = new RenderNode("sc_search_glass");
-                        }
+                        if (searchGlassNode == null) searchGlassNode = new RenderNode("sc_search_glass");
                         int w = bar.getWidth();
                         int h = bar.getHeight();
                         searchGlassNode.setPosition(0, 0, w, h);
 
                         ColorMatrix cm = new ColorMatrix();
                         cm.setSaturation(1.5f);
-                        RenderEffect vibrancyEffect = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
-                        float blurPx = dpf(blurDp);
-                        RenderEffect blurEffect = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP);
-
-                        searchLensShader.setFloatUniform("size", searchRect.width(), searchRect.height());
-                        searchLensShader.setFloatUniform("offset", -searchRect.left, -searchRect.top);
-                        searchLensShader.setFloatUniform("cornerRadii", new float[]{cr, cr, cr, cr});
-                        searchLensShader.setFloatUniform("refractionHeight", dpf(18f));
-                        searchLensShader.setFloatUniform("refractionAmount", -dpf(18f));
-                        searchLensShader.setFloatUniform("depthEffect", 0f);
-                        RenderEffect lensEffect = RenderEffect.createRuntimeShaderEffect(searchLensShader, "content");
-
-                        RenderEffect chain = RenderEffect.createChainEffect(lensEffect,
-                                RenderEffect.createChainEffect(blurEffect, vibrancyEffect));
+                        RenderEffect chain = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
+                        if (blurDp > 0.2f) {
+                            float blurPx = dpf(blurDp);
+                            chain = RenderEffect.createChainEffect(
+                                    RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP), chain);
+                        }
+                        if (searchPress > 0.02f && searchDispersionShader != null && dispersionAmount > 0.01f) {
+                            float refPx = dpf(Math.max(10f, refractionDp * 0.7f));
+                            searchDispersionShader.setFloatUniform("size", animSearchRect.width(), animSearchRect.height());
+                            searchDispersionShader.setFloatUniform("offset", -animSearchRect.left, -animSearchRect.top);
+                            searchDispersionShader.setFloatUniform("cornerRadii", new float[]{cr, cr, cr, cr});
+                            searchDispersionShader.setFloatUniform("refractionHeight", refPx);
+                            searchDispersionShader.setFloatUniform("refractionAmount", -refPx);
+                            searchDispersionShader.setFloatUniform("depthEffect", 1f);
+                            searchDispersionShader.setFloatUniform("chromaticAberration", dispersionAmount * searchPress);
+                            chain = RenderEffect.createChainEffect(
+                                    RenderEffect.createRuntimeShaderEffect(searchDispersionShader, "content"), chain);
+                        } else if (refractionDp > 0.5f) {
+                            float refPx = dpf(refractionDp * 0.75f);
+                            searchLensShader.setFloatUniform("size", animSearchRect.width(), animSearchRect.height());
+                            searchLensShader.setFloatUniform("offset", -animSearchRect.left, -animSearchRect.top);
+                            searchLensShader.setFloatUniform("cornerRadii", new float[]{cr, cr, cr, cr});
+                            searchLensShader.setFloatUniform("refractionHeight", refPx);
+                            searchLensShader.setFloatUniform("refractionAmount", -refPx);
+                            searchLensShader.setFloatUniform("depthEffect", 0f);
+                            chain = RenderEffect.createChainEffect(
+                                    RenderEffect.createRuntimeShaderEffect(searchLensShader, "content"), chain);
+                        }
                         searchGlassNode.setRenderEffect(chain);
 
                         Canvas sc = searchGlassNode.beginRecording(w, h);
@@ -2130,11 +1846,11 @@ public final class LiquidGlassTabBar {
                         canvas.drawRenderNode(searchGlassNode);
                     }
 
-                    surfacePaint.setColor(dark ? Color.argb(108, 24, 24, 28) : Color.argb(120, 245, 247, 252));
-                    canvas.drawRoundRect(searchRect, cr, cr, surfacePaint);
+                    surfacePaint.setColor(dark ? Color.argb(surfAlpha, 24, 24, 28) : Color.argb(surfAlpha, 245, 247, 252));
+                    canvas.drawRoundRect(animSearchRect, cr, cr, surfacePaint);
                     canvas.restore();
 
-                    drawBloomRim(canvas, searchRect, cr, 0.8f, -45f);
+                    drawBloomRim(canvas, animSearchRect, cr, 0.8f + 0.2f * searchPress, -45f + 135f * searchPress);
                     canvas.restore();
                 }
             }
@@ -2149,17 +1865,24 @@ public final class LiquidGlassTabBar {
             private final Paint pillSurfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint surfaceTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint activeTintLayerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final RectF animSearchRect = new RectF();
             private final float[] tmpCX = new float[1];
             private final float[] tmpCY = new float[1];
             private final float[] tmpW = new float[1];
+
+            GlassOverlayDrawable() {
+                activeTintLayerPaint.setColorFilter(new PorterDuffColorFilter(GLASS_ACTIVE_TINT, PorterDuff.Mode.SRC_IN));
+            }
 
             @Override
             public void draw(Canvas canvas) {
                 if (capturing) return;
                 updateGeometry();
                 boolean dark = isDarkTheme();
-                float p = stackedMode ? 0f : Math.max(0f, Math.min(1f, collapseProgress));
+                int surfAlpha = computeSurfaceTintAlpha(dark);
+                float p = Math.max(0f, Math.min(1f, collapseProgress));
 
                 // 1. Sliding Liquid Glass Pill on the left TabBar
                 if (p < 0.85f && !searchTabSelected && !tabRects.isEmpty() && outerRect.width() > 0f) {
@@ -2170,6 +1893,7 @@ public final class LiquidGlassTabBar {
                     float centerY = tmpCY[0];
                     float tabW = tmpW[0];
 
+                    // InteractiveHighlight (AGSL BlendMode.PLUS)
                     if (Build.VERSION.SDK_INT >= 33 && pressProgress > 0.005f && highlightShader != null) {
                         canvas.save();
                         clipPath.reset();
@@ -2182,7 +1906,7 @@ public final class LiquidGlassTabBar {
                         canvas.drawRect(outerRect, highlightPaint);
 
                         highlightShader.setFloatUniform("size", outerRect.width(), outerRect.height());
-                        highlightShader.setColorUniform("color", Color.argb((int) (255 * 0.12f * pressProgress * pillAlphaMult), 255, 255, 255));
+                        highlightShader.setColorUniform("color", Color.argb((int) (255 * 0.14f * pressProgress * pillAlphaMult), 255, 255, 255));
                         highlightShader.setFloatUniform("radius", outerRect.height() * 1.2f);
                         highlightShader.setFloatUniform("position", centerX - outerRect.left, centerY - outerRect.top);
                         highlightPaint.setShader(highlightShader);
@@ -2192,6 +1916,7 @@ public final class LiquidGlassTabBar {
                         canvas.restore();
                     }
 
+                    // Sliding Glass Pill Indicator
                     float innerLeft = outerRect.left + dpf(4f);
                     float innerRight = outerRect.right - dpf(4f);
                     float maxBaseW = (innerRight - innerLeft) / Math.max(1, tabRects.size());
@@ -2218,9 +1943,13 @@ public final class LiquidGlassTabBar {
                     clipPath.addRoundRect(pillRect, pillRadius, pillRadius, Path.Direction.CW);
                     canvas.clipPath(clipPath);
 
-                    if (Build.VERSION.SDK_INT >= 33 && pressProgress > 0.01f
-                            && outerGlassNode != null && outerGlassNode.hasDisplayList()
-                            && pillDispersionShader != null && canvas.isHardwareAccelerated()) {
+                    // NPatch Effect #2 (from 151936.jpg):
+                    // Draw blurred outer glass + ACCENT-TINTED (SRC_IN) menu copy inside pillRect!
+                    // Everywhere the Liquid Glass pill touches an icon or label, it INSTANTLY changes color
+                    // AND magnifies + refracts with 7-band chromatic dispersion when pressed/dragged!
+                    ViewGroup menu = getMenuView();
+                    if (Build.VERSION.SDK_INT >= 33 && outerGlassNode != null && outerGlassNode.hasDisplayList()
+                            && canvas.isHardwareAccelerated()) {
                         if (pillCombinedNode == null) pillCombinedNode = new RenderNode("sc_pill_combined");
                         if (pillGlassNode == null) pillGlassNode = new RenderNode("sc_pill_glass");
 
@@ -2232,30 +1961,38 @@ public final class LiquidGlassTabBar {
                         Canvas cc = pillCombinedNode.beginRecording(w, h);
                         try {
                             cc.drawRenderNode(outerGlassNode);
-                            surfaceTintPaint.setColor(dark ? Color.argb(102, 24, 24, 28) : Color.argb(115, 245, 247, 252));
+                            surfaceTintPaint.setColor(dark ? Color.argb(surfAlpha, 24, 24, 28) : Color.argb(surfAlpha, 245, 247, 252));
                             cc.drawRect(0, 0, w, h, surfaceTintPaint);
 
-                            ViewGroup menu = getMenuView();
                             if (menu != null) {
-                                float tabScale = 1f + 0.2f * pressProgress;
+                                float tabScale = 1f + 0.18f * pressProgress;
                                 cc.save();
                                 cc.scale(tabScale, tabScale, centerX, centerY);
                                 cc.translate(menu.getLeft() + menu.getTranslationX(), menu.getTop() + menu.getTranslationY());
+                                // SRC_IN saveLayer tints EVERY icon/label pixel inside the glass pill to accent color!
+                                int layer = cc.saveLayer(0f, 0f, menu.getWidth(), menu.getHeight(), activeTintLayerPaint);
                                 menu.draw(cc);
+                                cc.restoreToCount(layer);
                                 cc.restore();
                             }
                         } finally {
                             pillCombinedNode.endRecording();
                         }
 
-                        pillDispersionShader.setFloatUniform("size", pillRect.width(), pillRect.height());
-                        pillDispersionShader.setFloatUniform("offset", -pillRect.left, -pillRect.top);
-                        pillDispersionShader.setFloatUniform("cornerRadii", new float[]{pillRadius, pillRadius, pillRadius, pillRadius});
-                        pillDispersionShader.setFloatUniform("refractionHeight", dpf(10f) * pressProgress);
-                        pillDispersionShader.setFloatUniform("refractionAmount", -dpf(14f) * pressProgress);
-                        pillDispersionShader.setFloatUniform("depthEffect", 1f);
-                        pillDispersionShader.setFloatUniform("chromaticAberration", 0.5f);
-                        pillGlassNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(pillDispersionShader, "content"));
+                        if (pressProgress > 0.01f && pillDispersionShader != null && refractionDp > 0.5f) {
+                            float pRefH = dpf(refractionDp * 0.45f) * pressProgress;
+                            float pRefA = dpf(refractionDp * 0.62f) * pressProgress;
+                            pillDispersionShader.setFloatUniform("size", pillRect.width(), pillRect.height());
+                            pillDispersionShader.setFloatUniform("offset", -pillRect.left, -pillRect.top);
+                            pillDispersionShader.setFloatUniform("cornerRadii", new float[]{pillRadius, pillRadius, pillRadius, pillRadius});
+                            pillDispersionShader.setFloatUniform("refractionHeight", Math.max(1f, pRefH));
+                            pillDispersionShader.setFloatUniform("refractionAmount", -Math.max(1f, pRefA));
+                            pillDispersionShader.setFloatUniform("depthEffect", 1f);
+                            pillDispersionShader.setFloatUniform("chromaticAberration", dispersionAmount);
+                            pillGlassNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(pillDispersionShader, "content"));
+                        } else {
+                            pillGlassNode.setRenderEffect(null);
+                        }
 
                         Canvas pg = pillGlassNode.beginRecording(w, h);
                         try {
@@ -2266,7 +2003,7 @@ public final class LiquidGlassTabBar {
                         canvas.drawRenderNode(pillGlassNode);
                     }
 
-                    int restAlpha = Math.round(25.5f * (1f - pressProgress) * pillAlphaMult);
+                    int restAlpha = Math.round(28f * (1f - pressProgress) * pillAlphaMult);
                     pillSurfacePaint.setColor(dark
                             ? Color.argb(restAlpha, 255, 255, 255)
                             : Color.argb(restAlpha, 0, 0, 0));
@@ -2278,7 +2015,7 @@ public final class LiquidGlassTabBar {
 
                         innerShadowPaint.setStyle(Paint.Style.STROKE);
                         innerShadowPaint.setStrokeWidth(dpf(8f) * pressProgress);
-                        innerShadowPaint.setColor(Color.argb(Math.round(38f * pressProgress * pillAlphaMult), 0, 0, 0));
+                        innerShadowPaint.setColor(Color.argb(Math.round(42f * pressProgress * pillAlphaMult), 0, 0, 0));
                         canvas.drawRoundRect(pillRect, pillRadius, pillRadius, innerShadowPaint);
                     }
                     canvas.restore();
@@ -2288,30 +2025,56 @@ public final class LiquidGlassTabBar {
                     }
                 }
 
-                // 2. Morphing Search (🔍) <-> Menu (☰) icon inside the right separated Liquid Glass circle
+                // 2. Right Separated Search <-> Menu Circle: iOS 27 Hold-to-Glow + Icon
                 if (searchRect.width() > 0f) {
-                    float morphP = stackedMode ? 0f : Math.max(0f, Math.min(1f, collapseProgress));
-                    float cx = searchRect.centerX();
-                    float cy = searchRect.centerY();
-                    int baseColor = searchTabSelected && morphP < 0.5f
-                            ? Color.rgb(255, 85, 0)
-                            : (dark ? Color.WHITE : Color.rgb(28, 28, 30));
+                    animSearchRect.set(searchRect);
+                    animSearchRect.offset(searchOffsetX, searchOffsetY);
+                    float cx = animSearchRect.centerX();
+                    float cy = animSearchRect.centerY();
+                    float cr = animSearchRect.height() * 0.5f;
+                    float btnScale = 1f + 0.26f * searchPress;
 
                     canvas.save();
-                    if (Math.abs(searchBtnScale - 1f) > 0.002f) {
-                        canvas.scale(searchBtnScale, searchBtnScale, cx, cy);
+                    if (Math.abs(btnScale - 1f) > 0.002f) {
+                        canvas.scale(btnScale, btnScale, cx, cy);
                     }
+
+                    // iOS 27 luminous glow when held/dragged
+                    if (Build.VERSION.SDK_INT >= 33 && searchPress > 0.01f && highlightShader != null) {
+                        canvas.save();
+                        clipPath.reset();
+                        clipPath.addRoundRect(animSearchRect, cr, cr, Path.Direction.CW);
+                        canvas.clipPath(clipPath);
+                        highlightPaint.setBlendMode(BlendMode.PLUS);
+                        highlightPaint.setShader(null);
+                        highlightPaint.setColor(Color.argb(Math.round(255 * 0.14f * searchPress), 255, 255, 255));
+                        canvas.drawRect(animSearchRect, highlightPaint);
+
+                        highlightShader.setFloatUniform("size", animSearchRect.width(), animSearchRect.height());
+                        highlightShader.setColorUniform("color", Color.argb(Math.round(255 * 0.30f * searchPress), 255, 190, 140));
+                        highlightShader.setFloatUniform("radius", animSearchRect.width() * 0.85f);
+                        highlightShader.setFloatUniform("position", animSearchRect.width() * 0.5f, animSearchRect.height() * 0.5f);
+                        highlightPaint.setShader(highlightShader);
+                        canvas.drawRect(animSearchRect, highlightPaint);
+                        highlightPaint.setShader(null);
+                        highlightPaint.setBlendMode(null);
+                        canvas.restore();
+                    }
+
+                    int baseColor = (searchTabSelected || searchPress > 0.35f) && p < 0.5f
+                            ? GLASS_ACTIVE_TINT
+                            : (dark ? Color.WHITE : Color.rgb(28, 28, 30));
 
                     iconPaint.setStyle(Paint.Style.STROKE);
                     iconPaint.setStrokeCap(Paint.Cap.ROUND);
                     iconPaint.setStrokeWidth(dpf(2.1f));
 
-                    float searchAlpha = Math.max(0f, 1f - morphP * 1.6f);
+                    float searchAlpha = Math.max(0f, 1f - p * 1.6f);
                     if (searchAlpha > 0.02f) {
                         canvas.save();
-                        float s = 1f - 0.25f * morphP;
+                        float s = 1f - 0.25f * p;
                         canvas.scale(s, s, cx, cy);
-                        canvas.rotate(45f * morphP, cx, cy);
+                        canvas.rotate(45f * p, cx, cy);
                         iconPaint.setColor(baseColor);
                         iconPaint.setAlpha(Math.round(255 * searchAlpha));
                         float r = dpf(7.5f);
@@ -2327,12 +2090,12 @@ public final class LiquidGlassTabBar {
                         canvas.restore();
                     }
 
-                    float menuAlpha = Math.max(0f, (morphP - 0.35f) / 0.65f);
+                    float menuAlpha = Math.max(0f, (p - 0.35f) / 0.65f);
                     if (menuAlpha > 0.02f) {
                         canvas.save();
                         float s = 0.75f + 0.25f * menuAlpha;
                         canvas.scale(s, s, cx, cy);
-                        iconPaint.setColor(dark ? Color.WHITE : Color.rgb(28, 28, 30));
+                        iconPaint.setColor(searchPress > 0.35f ? GLASS_ACTIVE_TINT : (dark ? Color.WHITE : Color.rgb(28, 28, 30)));
                         iconPaint.setAlpha(Math.round(255 * menuAlpha));
                         float halfLine = dpf(8.5f);
                         float gap = dpf(5.5f);
