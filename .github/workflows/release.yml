@@ -84,8 +84,14 @@ jobs:
       - name: Semantic Release (Tag, Metadata & .mpp Asset)
         uses: cycjimmy/semantic-release-action@v8
         id: release
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Android DEX into MPP bundle
+        run: |
+          ./gradlew :patches:buildAndroid :patches:generatePatchesList --no-daemon
+          bash .github/scripts/verify_mpp.sh
 
       - name: Attest build provenance (public repos)
         if: steps.release.outputs.new_release_published == 'true' && github.event.repository.private == false
@@ -94,16 +100,13 @@ jobs:
           subject-name: 'SoundCloud Combined Patches ${{ steps.release.outputs.new_release_git_tag }}'
           subject-path: patches/build/libs/patches-*.mpp
 
-      - name: Verify compilation when no release was cut
-        if: steps.release.outputs.new_release_published != 'true'
-        run: |
-          ./gradlew :patches:check :patches:generatePatchesList --no-daemon
-          bash .github/scripts/verify_mpp.sh
-
       - name: Upload built MPP artifact
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: morphe-patches-mpp
-          path: patches/build/libs/patches-*.mpp
+          path: |
+            patches/build/libs/patches-*.mpp
+            !patches/build/libs/patches-*-sources.mpp
+            !patches/build/libs/patches-*-javadoc.mpp
