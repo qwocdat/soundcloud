@@ -6,22 +6,46 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+  id-token: write
+  attestations: write
+
 jobs:
   release:
     name: Release
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      packages: write
-      id-token: write
-      attestations: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract uploaded ZIPs and auto-commit
+        shell: bash
+        run: |
+          shopt -s nullglob
+          zips=( *.zip patches/*.zip )
+          if [ ${#zips[@]} -gt 0 ]; then
+            for z in "${zips[@]}"; do
+              echo "Force-extracting $z..."
+              unzip -o -q "$z" -d . -x ".github/workflows/*"
+              rm -f "$z"
+            done
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: extract uploaded zip patches [skip ci]"
+              git push origin HEAD:${{ github.ref_name }}
+            fi
+          else
+            echo "No ZIP files found to extract."
+          fi
 
       - name: Setup Java
         uses: actions/setup-java@v6.1.0
@@ -64,3 +88,11 @@ jobs:
         run: |
           ./gradlew :patches:check :patches:generatePatchesList --no-daemon
           bash .github/scripts/verify_mpp.sh
+
+      - name: Upload built MPP artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: morphe-patches-mpp
+          path: patches/build/libs/patches-*.mpp
