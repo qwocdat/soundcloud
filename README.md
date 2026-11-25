@@ -27,9 +27,9 @@ Or add the repository URL manually in **Morphe Manager → Settings → Sources*
 ## Included Patches (`9` Patches — `7` Enabled by Default, `2` Opt-in)
 
 <!-- PATCHES_START EXPANDED -->
-> **[v1.1.0](https://github.com/longthree1/morphe-patches/releases/tag/v1.1.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;9 patches total
+> **[v1.0.0](https://github.com/qwocdat/soundcloud/releases/tag/v1.0.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;10 patches total
 <details open>
-<summary>📦 SoundCloud&nbsp;&nbsp;•&nbsp;&nbsp;9 patches</summary>
+<summary>📦 SoundCloud&nbsp;&nbsp;•&nbsp;&nbsp;10 patches</summary>
 <br>
 
 **🎯 Supported versions:**
@@ -46,6 +46,7 @@ Or add the repository URL manually in **Morphe Manager → Settings → Sources*
 | [Hide Cast icon](#hide-cast-icon) | Hides SoundCloud's Cast button in both the toolbar menu and standalone media route views. | OFF |  |
 | [Hide Message icon](#hide-message-icon) | Hides SoundCloud's direct message / inbox icon on user profile headers and the top toolbar. | OFF |  |
 | [Home in Android Auto](#home-in-android-auto) | Fills the car Home tab with regular cover tiles from the phone's Home, using the app's existing account. Tracks, mixes and artists play; playlists and albums open. Publishes the real playback queue for Up next, with queue item selection. Falls back to SoundCloud's original car Home if the phone Home cannot load. | ON |  |
+| [Liquid glass tab bar](#liquid-glass-tab-bar) | Replaces SoundCloud's bottom navigation bar with a floating iOS-style Liquid Glass pill featuring real-time backdrop refraction, 7-band chromatic dispersion, damped spring physics, and tilt-reactive specular highlights. | ON |  |
 | [Remove ads and upsells](#remove-ads-and-upsells) | Stops SoundCloud from requesting audio/display ads and hides Go upsell prompts. Does not change the account's plan, features or entitlements. | ON |  |
 | [Vietnamese language](#vietnamese-language) | Adds Vietnamese UI resources and known server-provided interface labels, preserves content titles, and enables Tiếng Việt in app locale selection. | ON |  |
 
