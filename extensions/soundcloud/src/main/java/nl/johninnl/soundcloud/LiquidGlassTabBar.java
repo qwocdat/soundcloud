@@ -33,6 +33,8 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.WeakHashMap;
 
 /**
@@ -203,8 +205,11 @@ public final class LiquidGlassTabBar {
         private boolean frameScheduled = false;
         private long lastFrameNs = 0L;
 
+        // Visible tab views & measured rects in bar coordinates
+        private final List<View> visibleTabs = new ArrayList<>();
+        private final List<RectF> tabRects = new ArrayList<>();
+
         // Damped spring state (ported from DampedDragAnimation.kt)
-        private int tabCount = 0;
         private int currentIndex = 0;
         private float springValue = 0f;
         private float springTarget = 0f;
@@ -260,7 +265,13 @@ public final class LiquidGlassTabBar {
             bar.setClipChildren(false);
             bar.setClipToPadding(false);
 
-            int padH = dp(10f);
+            // Disable Material 3 stock active indicator pill so it doesn't overlap our Liquid Glass pill
+            try {
+                bar.getClass().getMethod("setItemActiveIndicatorEnabled", boolean.class).invoke(bar, false);
+            } catch (Throwable ignored) {
+            }
+
+            int padH = dp(12f);
             int padV = dp(4f);
             bar.setPadding(
                     Math.max(bar.getPaddingLeft(), padH),
@@ -348,24 +359,51 @@ public final class LiquidGlassTabBar {
         private void syncTabState(boolean snap) {
             ViewGroup menu = getMenuView();
             if (menu == null) return;
+            menu.setClipChildren(false);
+            menu.setClipToPadding(false);
             if (menu.getBackground() != null) {
                 menu.setBackgroundColor(Color.TRANSPARENT);
             }
-            int count = menu.getChildCount();
-            if (count <= 0) return;
-            tabCount = count;
 
+            visibleTabs.clear();
+            tabRects.clear();
+
+            int rawCount = menu.getChildCount();
             int selected = currentIndex;
-            for (int i = 0; i < count; i++) {
+            float menuLeft = menu.getLeft() + menu.getTranslationX();
+            float menuTop = menu.getTop() + menu.getTranslationY();
+
+            for (int i = 0; i < rawCount; i++) {
                 View child = menu.getChildAt(i);
                 if (child.getBackground() != null) {
                     child.setBackgroundColor(Color.TRANSPARENT);
                 }
                 child.setOnTouchListener(this);
-                if (child.isSelected()) {
-                    selected = i;
+                if (child.getVisibility() == View.VISIBLE && child.getWidth() > 0 && child.getHeight() > 0) {
+                    int visIdx = visibleTabs.size();
+                    visibleTabs.add(child);
+                    tabRects.add(new RectF(
+                            menuLeft + child.getLeft() + child.getTranslationX(),
+                            menuTop + child.getTop() + child.getTranslationY(),
+                            menuLeft + child.getRight() + child.getTranslationX(),
+                            menuTop + child.getBottom() + child.getTranslationY()
+                    ));
+                    if (child.isSelected()) {
+                        selected = visIdx;
+                    }
                 }
             }
+
+            int count = visibleTabs.size();
+            if (count <= 0) return;
+
+            if (currentIndex >= count) {
+                currentIndex = count - 1;
+            }
+            if (selected >= count) {
+                selected = count - 1;
+            }
+
             if (!trackingTouch && (selected != currentIndex || snap)) {
                 currentIndex = Math.max(0, Math.min(count - 1, selected));
                 springTarget = currentIndex;
@@ -397,7 +435,7 @@ public final class LiquidGlassTabBar {
             float bx = x;
             View cur = v;
             while (cur != null && cur != bar) {
-                bx += cur.getLeft();
+                bx += cur.getLeft() + cur.getTranslationX();
                 cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
             }
             return bx;
@@ -407,26 +445,43 @@ public final class LiquidGlassTabBar {
             float by = y;
             View cur = v;
             while (cur != null && cur != bar) {
-                by += cur.getTop();
+                by += cur.getTop() + cur.getTranslationY();
                 cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
             }
             return by;
         }
 
         private int indexAt(float x) {
-            if (tabCount <= 0) return 0;
-            float left = outerRect.left + dp(4f);
-            float contentW = Math.max(1f, outerRect.width() - dp(8f));
-            float tabW = contentW / tabCount;
-            boolean isLtr = bar.getLayoutDirection() == View.LAYOUT_DIRECTION_LTR;
-            float logicalX = isLtr ? (x - left) : (left + contentW - x);
-            int idx = (int) (logicalX / tabW);
-            return Math.max(0, Math.min(tabCount - 1, idx));
+            int count = tabRects.size();
+            if (count <= 0) return 0;
+            int bestIdx = 0;
+            float bestDist = Float.MAX_VALUE;
+            for (int i = 0; i < count; i++) {
+                RectF r = tabRects.get(i);
+                if (x >= r.left && x <= r.right) {
+                    return i;
+                }
+                float dist = Math.abs(x - r.centerX());
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        private float avgTabWidth() {
+            if (tabRects.isEmpty()) return Math.max(1f, outerRect.width() / 4f);
+            float sum = 0f;
+            for (RectF r : tabRects) sum += r.width();
+            return Math.max(1f, sum / tabRects.size());
         }
 
         @Override
         public boolean onTouch(View v, MotionEvent event) {
-            if (tabCount <= 0) return false;
+            syncTabState(false);
+            int count = visibleTabs.size();
+            if (count <= 0) return false;
 
             float x = toBarX(v, event.getX());
             float y = toBarY(v, event.getY());
@@ -456,11 +511,10 @@ public final class LiquidGlassTabBar {
                     }
                     if (isDragging) {
                         float stepDx = x - lastTouchX;
-                        float contentW = Math.max(1f, outerRect.width() - dp(8f));
-                        float tabW = contentW / tabCount;
+                        float tabW = avgTabWidth();
                         boolean isLtr = bar.getLayoutDirection() == View.LAYOUT_DIRECTION_LTR;
                         float deltaIdx = (stepDx / tabW) * (isLtr ? 1f : -1f);
-                        springTarget = Math.max(0f, Math.min(tabCount - 1f, springTarget + deltaIdx));
+                        springTarget = Math.max(0f, Math.min(count - 1f, springTarget + deltaIdx));
                         rawOffsetAccum += stepDx;
                         float fraction = Math.max(-1f, Math.min(1f, rawOffsetAccum / Math.max(1f, outerRect.width())));
                         float easeOut = 1f - (1f - Math.abs(fraction)) * (1f - Math.abs(fraction));
@@ -477,7 +531,7 @@ public final class LiquidGlassTabBar {
                     trackingTouch = false;
                     int target = event.getActionMasked() == MotionEvent.ACTION_CANCEL
                             ? touchStartIndex
-                            : Math.max(0, Math.min(tabCount - 1, Math.round(springTarget)));
+                            : Math.max(0, Math.min(count - 1, Math.round(springTarget)));
                     springTarget = target;
                     pressTarget = 0f;
                     scaleXTarget = 1f;
@@ -499,10 +553,9 @@ public final class LiquidGlassTabBar {
             return false;
         }
 
-        private void dispatchTabClick(int index) {
-            ViewGroup menu = getMenuView();
-            if (menu != null && index >= 0 && index < menu.getChildCount()) {
-                menu.getChildAt(index).performClick();
+        private void dispatchTabClick(int visibleIndex) {
+            if (visibleIndex >= 0 && visibleIndex < visibleTabs.size()) {
+                visibleTabs.get(visibleIndex).performClick();
             }
         }
 
@@ -638,13 +691,54 @@ public final class LiquidGlassTabBar {
         }
 
         private void updateGeometry() {
-            float w = bar.getWidth();
-            float h = bar.getHeight();
-            float marginH = dp(8f);
-            float marginV = dp(4f);
-            float pillH = Math.min(dp(64f), Math.max(dp(44f), h - marginV * 2f));
-            float top = (h - pillH) * 0.5f;
-            outerRect.set(marginH + panelOffsetPx, top, w - marginH + panelOffsetPx, top + pillH);
+            if (!tabRects.isEmpty()) {
+                float minLeft = Float.MAX_VALUE;
+                float minTop = Float.MAX_VALUE;
+                float maxRight = -Float.MAX_VALUE;
+                float maxBottom = -Float.MAX_VALUE;
+                for (RectF r : tabRects) {
+                    if (r.left < minLeft) minLeft = r.left;
+                    if (r.top < minTop) minTop = r.top;
+                    if (r.right > maxRight) maxRight = r.right;
+                    if (r.bottom > maxBottom) maxBottom = r.bottom;
+                }
+                float pad = dpf(4f);
+                float cy = (minTop + maxBottom) * 0.5f;
+                float pillH = Math.min(dpf(64f), Math.max(dpf(48f), (maxBottom - minTop) + pad * 2f));
+                outerRect.set(
+                        Math.max(dpf(4f), minLeft - pad) + panelOffsetPx,
+                        cy - pillH * 0.5f,
+                        Math.min(bar.getWidth() - dpf(4f), maxRight + pad) + panelOffsetPx,
+                        cy + pillH * 0.5f
+                );
+            } else {
+                float w = bar.getWidth();
+                float h = bar.getHeight();
+                float marginH = dp(8f);
+                float marginV = dp(4f);
+                float pillH = Math.min(dp(64f), Math.max(dp(44f), h - marginV * 2f));
+                float top = (h - pillH) * 0.5f;
+                outerRect.set(marginH + panelOffsetPx, top, w - marginH + panelOffsetPx, top + pillH);
+            }
+        }
+
+        private void computeInterpolatedPillBounds(float indexFloat, float[] outCenterX, float[] outCenterY, float[] outWidth) {
+            int count = tabRects.size();
+            if (count <= 0) {
+                outCenterX[0] = outerRect.centerX();
+                outCenterY[0] = outerRect.centerY();
+                outWidth[0] = outerRect.width();
+                return;
+            }
+            float clamped = Math.max(0f, Math.min(count - 1f, indexFloat));
+            int i0 = (int) Math.floor(clamped);
+            int i1 = Math.min(count - 1, i0 + 1);
+            float t = clamped - i0;
+            RectF r0 = tabRects.get(i0);
+            RectF r1 = tabRects.get(i1);
+            outCenterX[0] = r0.centerX() + (r1.centerX() - r0.centerX()) * t + panelOffsetPx;
+            outCenterY[0] = outerRect.centerY();
+            outWidth[0] = r0.width() + (r1.width() - r0.width()) * t;
         }
 
         private boolean isDarkTheme() {
@@ -746,15 +840,22 @@ public final class LiquidGlassTabBar {
             private final Paint highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint pillSurfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final float[] tmpCX = new float[1];
+            private final float[] tmpCY = new float[1];
+            private final float[] tmpW = new float[1];
 
             @Override
             public void draw(Canvas canvas) {
                 if (capturing) return;
                 updateGeometry();
-                if (tabCount <= 0 || outerRect.width() <= 0f) return;
+                if (tabRects.isEmpty() || outerRect.width() <= 0f) return;
 
                 boolean dark = isDarkTheme();
                 float outerRadius = outerRect.height() * 0.5f;
+                computeInterpolatedPillBounds(springValue, tmpCX, tmpCY, tmpW);
+                float centerX = tmpCX[0];
+                float centerY = tmpCY[0];
+                float tabW = tmpW[0];
 
                 // 1. InteractiveHighlight (AGSL BlendMode.PLUS)
                 if (Build.VERSION.SDK_INT >= 33 && pressProgress > 0.005f && highlightShader != null) {
@@ -768,18 +869,10 @@ public final class LiquidGlassTabBar {
                     highlightPaint.setColor(Color.argb((int) (255 * 0.06f * pressProgress), 255, 255, 255));
                     canvas.drawRect(outerRect, highlightPaint);
 
-                    float contentW = Math.max(1f, outerRect.width() - dpf(8f));
-                    float tabW = contentW / tabCount;
-                    boolean isLtr = bar.getLayoutDirection() == View.LAYOUT_DIRECTION_LTR;
-                    float hx = isLtr
-                            ? outerRect.left + dpf(4f) + (springValue + 0.5f) * tabW
-                            : outerRect.right - dpf(4f) - (springValue + 0.5f) * tabW;
-                    float hy = outerRect.centerY();
-
                     highlightShader.setFloatUniform("size", outerRect.width(), outerRect.height());
                     highlightShader.setColorUniform("color", Color.argb((int) (255 * 0.12f * pressProgress), 255, 255, 255));
                     highlightShader.setFloatUniform("radius", outerRect.height() * 1.2f);
-                    highlightShader.setFloatUniform("position", hx - outerRect.left, hy - outerRect.top);
+                    highlightShader.setFloatUniform("position", centerX - outerRect.left, centerY - outerRect.top);
                     highlightPaint.setShader(highlightShader);
                     canvas.drawRect(outerRect, highlightPaint);
                     highlightPaint.setShader(null);
@@ -788,16 +881,7 @@ public final class LiquidGlassTabBar {
                 }
 
                 // 2. Sliding Glass Pill Indicator
-                float contentW = Math.max(1f, outerRect.width() - dpf(8f));
-                float tabW = contentW / tabCount;
                 float pillH = Math.min(dpf(56f), outerRect.height() - dpf(8f));
-                boolean isLtr = bar.getLayoutDirection() == View.LAYOUT_DIRECTION_LTR;
-
-                float centerX = isLtr
-                        ? outerRect.left + dpf(4f) + (springValue + 0.5f) * tabW
-                        : outerRect.right - dpf(4f) - (springValue + 0.5f) * tabW;
-                float centerY = outerRect.centerY();
-
                 float velNorm = dragVelocity / 10f;
                 float dynScaleX = scaleX / (1f - Math.max(-0.2f, Math.min(0.2f, velNorm * 0.75f)));
                 float dynScaleY = scaleY * (1f - Math.max(-0.2f, Math.min(0.2f, velNorm * 0.25f)));
@@ -832,7 +916,7 @@ public final class LiquidGlassTabBar {
                             float tabScale = 1f + 0.2f * pressProgress;
                             cc.save();
                             cc.scale(tabScale, tabScale, centerX, centerY);
-                            cc.translate(bar.getPaddingLeft(), bar.getPaddingTop());
+                            cc.translate(menu.getLeft() + menu.getTranslationX(), menu.getTop() + menu.getTranslationY());
                             menu.draw(cc);
                             cc.restore();
                         }
