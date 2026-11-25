@@ -33,13 +33,14 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.WeakHashMap;
 
 /**
- * Ported from NPatch FloatingGlassBottomBar (Compose/AGSL) to Android View + RenderNode + AGSL
- * for SoundCloud's BottomTabBarRestyle / BottomTabBar.
+ * 1:1 port of NPatch FloatingGlassBottomBar (Compose/AGSL) to Android View + RenderNode + AGSL
+ * for SoundCloud's BottomTabBarRestyle / BottomTabBar, preserving SoundCloud's native tabs.
  */
 @SuppressLint("NewApi")
 public final class LiquidGlassTabBar {
@@ -209,7 +210,7 @@ public final class LiquidGlassTabBar {
         private final List<View> visibleTabs = new ArrayList<>();
         private final List<RectF> tabRects = new ArrayList<>();
 
-        // Damped spring state (ported from DampedDragAnimation.kt)
+        // Damped spring state (ported 1:1 from NPatch DampedDragAnimation.kt)
         private int currentIndex = 0;
         private float springValue = 0f;
         private float springTarget = 0f;
@@ -240,7 +241,7 @@ public final class LiquidGlassTabBar {
         private int touchStartIndex = 0;
         private int touchDownTargetIndex = 0;
 
-        // Pill geometry
+        // Pill geometry (always kept strictly inside bar bounds so top is never clipped)
         private final RectF outerRect = new RectF();
         private final RectF pillRect = new RectF();
         private final Path clipPath = new Path();
@@ -264,21 +265,19 @@ public final class LiquidGlassTabBar {
             bar.setWillNotDraw(false);
             bar.setClipChildren(false);
             bar.setClipToPadding(false);
+            bar.setElevation(0f);
 
-            // Disable Material 3 stock active indicator pill so it doesn't overlap our Liquid Glass pill
+            // Disable Material 3 stock active indicator pill so only our Liquid Glass pill shows
             try {
                 bar.getClass().getMethod("setItemActiveIndicatorEnabled", boolean.class).invoke(bar, false);
             } catch (Throwable ignored) {
             }
 
-            int padH = dp(12f);
-            int padV = dp(4f);
-            bar.setPadding(
-                    Math.max(bar.getPaddingLeft(), padH),
-                    Math.max(bar.getPaddingTop(), padV),
-                    Math.max(bar.getPaddingRight(), padH),
-                    Math.max(bar.getPaddingBottom(), padV)
-            );
+            // NPatch FloatingGlassBottomBar horizontal margin = 12.dp, internal padding = 4.dp
+            int padH = dp(16f);
+            int padTop = dp(8f);
+            int padBottom = Math.max(bar.getPaddingBottom(), dp(8f));
+            bar.setPadding(padH, padTop, padH, padBottom);
 
             bar.setBackground(bgDrawable);
             bar.getOverlay().add(fgDrawable);
@@ -291,10 +290,23 @@ public final class LiquidGlassTabBar {
             }
         }
 
+        private void disableAncestorClipping() {
+            ViewParent p = bar.getParent();
+            int depth = 0;
+            while (p instanceof ViewGroup && depth < 4) {
+                ViewGroup vg = (ViewGroup) p;
+                vg.setClipChildren(false);
+                vg.setClipToPadding(false);
+                p = vg.getParent();
+                depth++;
+            }
+        }
+
         @Override
         public void onViewAttachedToWindow(View v) {
             if (attached) return;
             attached = true;
+            disableAncestorClipping();
             bar.setBackground(bgDrawable);
             bar.getViewTreeObserver().addOnPreDrawListener(this);
             initSensors();
@@ -318,6 +330,7 @@ public final class LiquidGlassTabBar {
         @Override
         public void onLayoutChange(View v, int left, int top, int right, int bottom,
                                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
+            disableAncestorClipping();
             if (bar.getBackground() != bgDrawable) {
                 bar.setBackground(bgDrawable);
             }
@@ -356,6 +369,21 @@ public final class LiquidGlassTabBar {
             return null;
         }
 
+        private boolean isTabViewSelected(View child) {
+            if (child.isSelected() || child.isActivated()) return true;
+            try {
+                Method getItemData = child.getClass().getMethod("getItemData");
+                Object itemData = getItemData.invoke(child);
+                if (itemData != null) {
+                    Method isChecked = itemData.getClass().getMethod("isChecked");
+                    Object checked = isChecked.invoke(itemData);
+                    if (checked instanceof Boolean && (Boolean) checked) return true;
+                }
+            } catch (Throwable ignored) {
+            }
+            return false;
+        }
+
         private void syncTabState(boolean snap) {
             ViewGroup menu = getMenuView();
             if (menu == null) return;
@@ -369,7 +397,7 @@ public final class LiquidGlassTabBar {
             tabRects.clear();
 
             int rawCount = menu.getChildCount();
-            int selected = currentIndex;
+            int selected = -1;
             float menuLeft = menu.getLeft() + menu.getTranslationX();
             float menuTop = menu.getTop() + menu.getTranslationY();
 
@@ -388,7 +416,7 @@ public final class LiquidGlassTabBar {
                             menuLeft + child.getRight() + child.getTranslationX(),
                             menuTop + child.getBottom() + child.getTranslationY()
                     ));
-                    if (child.isSelected()) {
+                    if (isTabViewSelected(child)) {
                         selected = visIdx;
                     }
                 }
@@ -400,8 +428,8 @@ public final class LiquidGlassTabBar {
             if (currentIndex >= count) {
                 currentIndex = count - 1;
             }
-            if (selected >= count) {
-                selected = count - 1;
+            if (selected < 0) {
+                selected = currentIndex;
             }
 
             if (!trackingTouch && (selected != currentIndex || snap)) {
@@ -691,6 +719,13 @@ public final class LiquidGlassTabBar {
         }
 
         private void updateGeometry() {
+            float barW = bar.getWidth();
+            float barH = bar.getHeight();
+            if (barW <= 0f || barH <= 0f) return;
+
+            float safeTop = dpf(2f);
+            float safeBottom = barH - dpf(2f);
+
             if (!tabRects.isEmpty()) {
                 float minLeft = Float.MAX_VALUE;
                 float minTop = Float.MAX_VALUE;
@@ -702,23 +737,39 @@ public final class LiquidGlassTabBar {
                     if (r.right > maxRight) maxRight = r.right;
                     if (r.bottom > maxBottom) maxBottom = r.bottom;
                 }
-                float pad = dpf(4f);
-                float cy = (minTop + maxBottom) * 0.5f;
-                float pillH = Math.min(dpf(64f), Math.max(dpf(48f), (maxBottom - minTop) + pad * 2f));
-                outerRect.set(
-                        Math.max(dpf(4f), minLeft - pad) + panelOffsetPx,
-                        cy - pillH * 0.5f,
-                        Math.min(bar.getWidth() - dpf(4f), maxRight + pad) + panelOffsetPx,
-                        cy + pillH * 0.5f
-                );
+                float padH = dpf(4f);
+                float padV = dpf(4f);
+
+                // Keep top & bottom strictly inside [safeTop, safeBottom] so top curve is NEVER clipped
+                float top = Math.max(safeTop, minTop - padV);
+                float bottom = Math.min(safeBottom, maxBottom + padV);
+                float targetH = Math.min(dpf(64f), safeBottom - safeTop);
+                if (bottom - top < targetH) {
+                    float cy = (minTop + maxBottom) * 0.5f;
+                    top = cy - targetH * 0.5f;
+                    bottom = cy + targetH * 0.5f;
+                    if (top < safeTop) {
+                        bottom = Math.min(safeBottom, bottom + (safeTop - top));
+                        top = safeTop;
+                    }
+                    if (bottom > safeBottom) {
+                        top = Math.max(safeTop, top - (bottom - safeBottom));
+                        bottom = safeBottom;
+                    }
+                } else if (bottom - top > dpf(64f)) {
+                    float cy = (top + bottom) * 0.5f;
+                    top = Math.max(safeTop, cy - dpf(32f));
+                    bottom = Math.min(safeBottom, top + dpf(64f));
+                }
+
+                float left = Math.max(dpf(12f), minLeft - padH) + panelOffsetPx;
+                float right = Math.min(barW - dpf(12f), maxRight + padH) + panelOffsetPx;
+                outerRect.set(left, top, right, bottom);
             } else {
-                float w = bar.getWidth();
-                float h = bar.getHeight();
-                float marginH = dp(8f);
-                float marginV = dp(4f);
-                float pillH = Math.min(dp(64f), Math.max(dp(44f), h - marginV * 2f));
-                float top = (h - pillH) * 0.5f;
-                outerRect.set(marginH + panelOffsetPx, top, w - marginH + panelOffsetPx, top + pillH);
+                float marginH = dpf(12f);
+                float pillH = Math.min(dpf(64f), Math.max(dpf(44f), safeBottom - safeTop));
+                float top = safeTop + ((safeBottom - safeTop) - pillH) * 0.5f;
+                outerRect.set(marginH + panelOffsetPx, top, barW - marginH + panelOffsetPx, top + pillH);
             }
         }
 
@@ -767,13 +818,20 @@ public final class LiquidGlassTabBar {
                 boolean dark = isDarkTheme();
                 float radius = outerRect.height() * 0.5f;
 
-                // 1. Drop shadow
+                // NPatch outer bar press scale: lerp(1f, 1f + 16.dp / width, pressProgress)
+                float outerScale = 1f + (dpf(16f) / Math.max(1f, outerRect.width())) * pressProgress;
+                canvas.save();
+                if (pressProgress > 0.001f) {
+                    canvas.scale(outerScale, outerScale, outerRect.centerX(), outerRect.centerY());
+                }
+
+                // 1. Drop shadow (NPatch: radius 10.dp, alpha 0.2 dark / 0.1 light)
                 shadowPaint.setColor(Color.TRANSPARENT);
                 shadowPaint.setShadowLayer(dpf(10f), 0f, dpf(3f),
                         Color.argb(dark ? 51 : 26, 0, 0, 0));
                 canvas.drawRoundRect(outerRect, radius, radius, shadowPaint);
 
-                // 2. Backdrop + Vibrancy + Blur + Outer Lens Refraction
+                // 2. Backdrop + Vibrancy (sat 1.5) + Blur (4.dp) + Outer Lens Refraction (24.dp)
                 canvas.save();
                 clipPath.reset();
                 clipPath.addRoundRect(outerRect, radius, radius, Path.Direction.CW);
@@ -815,13 +873,14 @@ public final class LiquidGlassTabBar {
                     canvas.drawRenderNode(outerGlassNode);
                 }
 
-                // 3. Glass surface tint
+                // 3. Glass surface tint (NPatch containerColor.copy(0.4f))
                 surfacePaint.setColor(dark ? Color.argb(102, 24, 24, 28) : Color.argb(115, 245, 247, 252));
                 canvas.drawRoundRect(outerRect, radius, radius, surfacePaint);
                 canvas.restore();
 
-                // 4. Gravity-rotated BloomStroke rim highlight
+                // 4. Gravity-rotated BloomStroke rim highlight (alpha 0.75f, extraDegrees -45f)
                 drawBloomRim(canvas, outerRect, radius, 0.75f, -45f);
+                canvas.restore();
             }
 
             @Override
@@ -840,6 +899,7 @@ public final class LiquidGlassTabBar {
             private final Paint highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint pillSurfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Paint innerShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint surfaceTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final float[] tmpCX = new float[1];
             private final float[] tmpCY = new float[1];
             private final float[] tmpW = new float[1];
@@ -880,8 +940,8 @@ public final class LiquidGlassTabBar {
                     canvas.restore();
                 }
 
-                // 2. Sliding Glass Pill Indicator
-                float pillH = Math.min(dpf(56f), outerRect.height() - dpf(8f));
+                // 2. Sliding Glass Pill Indicator (height = min(56.dp, outerH - 8.dp))
+                float pillH = Math.min(dpf(56f), Math.max(dpf(36f), outerRect.height() - dpf(8f)));
                 float velNorm = dragVelocity / 10f;
                 float dynScaleX = scaleX / (1f - Math.max(-0.2f, Math.min(0.2f, velNorm * 0.75f)));
                 float dynScaleY = scaleY * (1f - Math.max(-0.2f, Math.min(0.2f, velNorm * 0.25f)));
@@ -896,9 +956,9 @@ public final class LiquidGlassTabBar {
                 clipPath.addRoundRect(pillRect, pillRadius, pillRadius, Path.Direction.CW);
                 canvas.clipPath(clipPath);
 
-                // 7-band chromatic dispersion lens when pressed/dragging
+                // 7-band chromatic dispersion lens over BLURRED outer glass + magnified SoundCloud tabs
                 if (Build.VERSION.SDK_INT >= 33 && pressProgress > 0.01f
-                        && backdropNode != null && backdropNode.hasDisplayList()
+                        && outerGlassNode != null && outerGlassNode.hasDisplayList()
                         && pillDispersionShader != null && canvas.isHardwareAccelerated()) {
                     if (pillCombinedNode == null) pillCombinedNode = new RenderNode("sc_pill_combined");
                     if (pillGlassNode == null) pillGlassNode = new RenderNode("sc_pill_glass");
@@ -910,7 +970,11 @@ public final class LiquidGlassTabBar {
 
                     Canvas cc = pillCombinedNode.beginRecording(w, h);
                     try {
-                        cc.drawRenderNode(backdropNode);
+                        // Draw already-blurred outer glass surface + tint (matches NPatch CombinedBackdrop)
+                        cc.drawRenderNode(outerGlassNode);
+                        surfaceTintPaint.setColor(dark ? Color.argb(102, 24, 24, 28) : Color.argb(115, 245, 247, 252));
+                        cc.drawRect(0, 0, w, h, surfaceTintPaint);
+
                         ViewGroup menu = getMenuView();
                         if (menu != null) {
                             float tabScale = 1f + 0.2f * pressProgress;
@@ -942,7 +1006,7 @@ public final class LiquidGlassTabBar {
                     canvas.drawRenderNode(pillGlassNode);
                 }
 
-                // Pill resting & pressed surface tint
+                // Pill resting & pressed surface tint (NPatch: 0.1f * (1 - progress) + 0.03f * progress)
                 int restAlpha = Math.round(25.5f * (1f - pressProgress));
                 pillSurfacePaint.setColor(dark
                         ? Color.argb(restAlpha, 255, 255, 255)
@@ -953,7 +1017,7 @@ public final class LiquidGlassTabBar {
                     pillSurfacePaint.setColor(Color.argb(Math.round(8f * pressProgress), 0, 0, 0));
                     canvas.drawRoundRect(pillRect, pillRadius, pillRadius, pillSurfacePaint);
 
-                    // InnerShadow
+                    // InnerShadow (NPatch: 8.dp * progress, Black 0.15f)
                     innerShadowPaint.setStyle(Paint.Style.STROKE);
                     innerShadowPaint.setStrokeWidth(dpf(8f) * pressProgress);
                     innerShadowPaint.setColor(Color.argb(Math.round(38f * pressProgress), 0, 0, 0));
@@ -961,7 +1025,7 @@ public final class LiquidGlassTabBar {
                 }
                 canvas.restore();
 
-                // Pill specular rim highlight
+                // Pill specular rim highlight (NPatch: extraDegrees 90f, alpha = pressProgress)
                 if (pressProgress > 0.01f) {
                     drawBloomRim(canvas, pillRect, pillRadius, pressProgress, 90f);
                 }
