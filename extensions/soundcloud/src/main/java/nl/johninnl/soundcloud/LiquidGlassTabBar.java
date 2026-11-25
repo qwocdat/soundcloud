@@ -241,7 +241,7 @@ public final class LiquidGlassTabBar {
         private int touchStartIndex = 0;
         private int touchDownTargetIndex = 0;
 
-        // Pill geometry (always kept strictly inside bar bounds so top is never clipped)
+        // Pill geometry
         private final RectF outerRect = new RectF();
         private final RectF pillRect = new RectF();
         private final Path clipPath = new Path();
@@ -273,11 +273,10 @@ public final class LiquidGlassTabBar {
             } catch (Throwable ignored) {
             }
 
-            // NPatch FloatingGlassBottomBar horizontal margin = 12.dp, internal padding = 4.dp
-            int padH = dp(16f);
-            int padTop = dp(8f);
-            int padBottom = Math.max(bar.getPaddingBottom(), dp(8f));
-            bar.setPadding(padH, padTop, padH, padBottom);
+            // Keep vertical padding safe; horizontal inset is applied directly to BottomNavigationMenuView
+            int padTop = dp(6f);
+            int padBottom = Math.max(bar.getPaddingBottom(), dp(6f));
+            bar.setPadding(0, padTop, 0, padBottom);
 
             bar.setBackground(bgDrawable);
             bar.getOverlay().add(fgDrawable);
@@ -384,6 +383,20 @@ public final class LiquidGlassTabBar {
             return false;
         }
 
+        private void ensureMenuMargins(ViewGroup menu) {
+            // Outer glass bar sits at [12dp, barW - 12dp]; tabs sit inside [16dp, barW - 16dp] (4dp concentric gap)
+            int targetMarginH = dp(16f);
+            ViewGroup.LayoutParams rawLp = menu.getLayoutParams();
+            if (rawLp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) rawLp;
+                if (lp.leftMargin != targetMarginH || lp.rightMargin != targetMarginH) {
+                    lp.leftMargin = targetMarginH;
+                    lp.rightMargin = targetMarginH;
+                    menu.setLayoutParams(lp);
+                }
+            }
+        }
+
         private void syncTabState(boolean snap) {
             ViewGroup menu = getMenuView();
             if (menu == null) return;
@@ -392,6 +405,7 @@ public final class LiquidGlassTabBar {
             if (menu.getBackground() != null) {
                 menu.setBackgroundColor(Color.TRANSPARENT);
             }
+            ensureMenuMargins(menu);
 
             visibleTabs.clear();
             tabRects.clear();
@@ -499,7 +513,7 @@ public final class LiquidGlassTabBar {
         }
 
         private float avgTabWidth() {
-            if (tabRects.isEmpty()) return Math.max(1f, outerRect.width() / 4f);
+            if (tabRects.isEmpty()) return Math.max(1f, outerRect.width() / 5f);
             float sum = 0f;
             for (RectF r : tabRects) sum += r.width();
             return Math.max(1f, sum / tabRects.size());
@@ -726,21 +740,18 @@ public final class LiquidGlassTabBar {
             float safeTop = dpf(2f);
             float safeBottom = barH - dpf(2f);
 
+            // Horizontal bounds strictly match NPatch MainScreen (12dp margin), wrapping menu (16dp margin) by 4dp
+            float left = dpf(12f) + panelOffsetPx;
+            float right = barW - dpf(12f) + panelOffsetPx;
+
             if (!tabRects.isEmpty()) {
-                float minLeft = Float.MAX_VALUE;
                 float minTop = Float.MAX_VALUE;
-                float maxRight = -Float.MAX_VALUE;
                 float maxBottom = -Float.MAX_VALUE;
                 for (RectF r : tabRects) {
-                    if (r.left < minLeft) minLeft = r.left;
                     if (r.top < minTop) minTop = r.top;
-                    if (r.right > maxRight) maxRight = r.right;
                     if (r.bottom > maxBottom) maxBottom = r.bottom;
                 }
-                float padH = dpf(4f);
                 float padV = dpf(4f);
-
-                // Keep top & bottom strictly inside [safeTop, safeBottom] so top curve is NEVER clipped
                 float top = Math.max(safeTop, minTop - padV);
                 float bottom = Math.min(safeBottom, maxBottom + padV);
                 float targetH = Math.min(dpf(64f), safeBottom - safeTop);
@@ -761,15 +772,11 @@ public final class LiquidGlassTabBar {
                     top = Math.max(safeTop, cy - dpf(32f));
                     bottom = Math.min(safeBottom, top + dpf(64f));
                 }
-
-                float left = Math.max(dpf(12f), minLeft - padH) + panelOffsetPx;
-                float right = Math.min(barW - dpf(12f), maxRight + padH) + panelOffsetPx;
                 outerRect.set(left, top, right, bottom);
             } else {
-                float marginH = dpf(12f);
                 float pillH = Math.min(dpf(64f), Math.max(dpf(44f), safeBottom - safeTop));
                 float top = safeTop + ((safeBottom - safeTop) - pillH) * 0.5f;
-                outerRect.set(marginH + panelOffsetPx, top, barW - marginH + panelOffsetPx, top + pillH);
+                outerRect.set(left, top, right, top + pillH);
             }
         }
 
@@ -940,14 +947,26 @@ public final class LiquidGlassTabBar {
                     canvas.restore();
                 }
 
-                // 2. Sliding Glass Pill Indicator (height = min(56.dp, outerH - 8.dp))
+                // 2. Sliding Glass Pill Indicator (strictly concentric inside outerRect at rest)
+                float innerLeft = outerRect.left + dpf(4f);
+                float innerRight = outerRect.right - dpf(4f);
+                float maxBaseW = (innerRight - innerLeft) / Math.max(1, tabRects.size());
+                float baseW = Math.min(tabW, maxBaseW);
                 float pillH = Math.min(dpf(56f), Math.max(dpf(36f), outerRect.height() - dpf(8f)));
+
                 float velNorm = dragVelocity / 10f;
                 float dynScaleX = scaleX / (1f - Math.max(-0.2f, Math.min(0.2f, velNorm * 0.75f)));
                 float dynScaleY = scaleY * (1f - Math.max(-0.2f, Math.min(0.2f, velNorm * 0.25f)));
 
-                float pw = tabW * dynScaleX;
+                float pw = baseW * dynScaleX;
                 float ph = pillH * dynScaleY;
+
+                // At rest, clamp centerX so pill never pokes outside outerRect's inner 4dp boundary
+                if (pressProgress <= 0.01f) {
+                    float halfPw = pw * 0.5f;
+                    centerX = Math.max(innerLeft + halfPw, Math.min(innerRight - halfPw, centerX));
+                }
+
                 pillRect.set(centerX - pw * 0.5f, centerY - ph * 0.5f, centerX + pw * 0.5f, centerY + ph * 0.5f);
                 float pillRadius = ph * 0.5f;
 
@@ -970,7 +989,6 @@ public final class LiquidGlassTabBar {
 
                     Canvas cc = pillCombinedNode.beginRecording(w, h);
                     try {
-                        // Draw already-blurred outer glass surface + tint (matches NPatch CombinedBackdrop)
                         cc.drawRenderNode(outerGlassNode);
                         surfaceTintPaint.setColor(dark ? Color.argb(102, 24, 24, 28) : Color.argb(115, 245, 247, 252));
                         cc.drawRect(0, 0, w, h, surfaceTintPaint);
