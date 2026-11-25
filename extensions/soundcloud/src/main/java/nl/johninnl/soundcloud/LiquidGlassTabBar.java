@@ -30,6 +30,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 
 import java.util.WeakHashMap;
@@ -566,6 +567,42 @@ public final class LiquidGlassTabBar {
             return true;
         }
 
+        private boolean isAncestorOfBar(View candidate) {
+            ViewParent p = bar.getParent();
+            while (p instanceof View) {
+                if (p == candidate) return true;
+                p = p.getParent();
+            }
+            return false;
+        }
+
+        private void drawViewExcludingBar(Canvas c, View view) {
+            if (view == bar || view.getVisibility() != View.VISIBLE) return;
+            if (!isAncestorOfBar(view)) {
+                view.draw(c);
+                return;
+            }
+            if (view instanceof ViewGroup) {
+                ViewGroup vg = (ViewGroup) view;
+                Drawable bg = vg.getBackground();
+                if (bg != null) {
+                    bg.draw(c);
+                }
+                int count = vg.getChildCount();
+                for (int i = 0; i < count; i++) {
+                    View child = vg.getChildAt(i);
+                    if (child == bar || child.getVisibility() != View.VISIBLE) continue;
+                    int save = c.save();
+                    c.translate(
+                            child.getLeft() + child.getTranslationX() - vg.getScrollX(),
+                            child.getTop() + child.getTranslationY() - vg.getScrollY()
+                    );
+                    drawViewExcludingBar(c, child);
+                    c.restoreToCount(save);
+                }
+            }
+        }
+
         private void captureBackdrop() {
             View root = bar.getRootView();
             if (root == null) return;
@@ -574,6 +611,8 @@ public final class LiquidGlassTabBar {
 
             int w = bar.getWidth();
             int h = bar.getHeight();
+            if (w <= 0 || h <= 0) return;
+
             if (backdropNode == null) {
                 backdropNode = new RenderNode("sc_liquid_backdrop");
             }
@@ -587,16 +626,13 @@ public final class LiquidGlassTabBar {
             float dy = contentLoc[1] - barLoc[1];
 
             capturing = true;
-            int prevVisibility = bar.getVisibility();
+            Canvas c = backdropNode.beginRecording(w, h);
             try {
-                bar.setVisibility(View.INVISIBLE);
-                Canvas c = backdropNode.beginRecording(w, h);
                 c.translate(dx, dy);
-                content.draw(c);
-                backdropNode.endRecording();
+                drawViewExcludingBar(c, content);
             } catch (Throwable ignored) {
             } finally {
-                bar.setVisibility(prevVisibility);
+                backdropNode.endRecording();
                 capturing = false;
             }
         }
@@ -630,6 +666,7 @@ public final class LiquidGlassTabBar {
 
             @Override
             public void draw(Canvas canvas) {
+                if (capturing) return;
                 updateGeometry();
                 if (outerRect.width() <= 0f || outerRect.height() <= 0f) return;
 
@@ -648,7 +685,8 @@ public final class LiquidGlassTabBar {
                 clipPath.addRoundRect(outerRect, radius, radius, Path.Direction.CW);
                 canvas.clipPath(clipPath);
 
-                if (Build.VERSION.SDK_INT >= 33 && backdropNode != null && canvas.isHardwareAccelerated()) {
+                if (Build.VERSION.SDK_INT >= 33 && backdropNode != null
+                        && backdropNode.hasDisplayList() && canvas.isHardwareAccelerated()) {
                     if (outerGlassNode == null) {
                         outerGlassNode = new RenderNode("sc_outer_glass");
                     }
@@ -675,8 +713,11 @@ public final class LiquidGlassTabBar {
                     outerGlassNode.setRenderEffect(chain);
 
                     Canvas gc = outerGlassNode.beginRecording(w, h);
-                    gc.drawRenderNode(backdropNode);
-                    outerGlassNode.endRecording();
+                    try {
+                        gc.drawRenderNode(backdropNode);
+                    } finally {
+                        outerGlassNode.endRecording();
+                    }
                     canvas.drawRenderNode(outerGlassNode);
                 }
 
@@ -708,6 +749,7 @@ public final class LiquidGlassTabBar {
 
             @Override
             public void draw(Canvas canvas) {
+                if (capturing) return;
                 updateGeometry();
                 if (tabCount <= 0 || outerRect.width() <= 0f) return;
 
@@ -771,7 +813,8 @@ public final class LiquidGlassTabBar {
                 canvas.clipPath(clipPath);
 
                 // 7-band chromatic dispersion lens when pressed/dragging
-                if (Build.VERSION.SDK_INT >= 33 && pressProgress > 0.01f && backdropNode != null
+                if (Build.VERSION.SDK_INT >= 33 && pressProgress > 0.01f
+                        && backdropNode != null && backdropNode.hasDisplayList()
                         && pillDispersionShader != null && canvas.isHardwareAccelerated()) {
                     if (pillCombinedNode == null) pillCombinedNode = new RenderNode("sc_pill_combined");
                     if (pillGlassNode == null) pillGlassNode = new RenderNode("sc_pill_glass");
@@ -782,17 +825,20 @@ public final class LiquidGlassTabBar {
                     pillGlassNode.setPosition(0, 0, w, h);
 
                     Canvas cc = pillCombinedNode.beginRecording(w, h);
-                    cc.drawRenderNode(backdropNode);
-                    ViewGroup menu = getMenuView();
-                    if (menu != null) {
-                        float tabScale = 1f + 0.2f * pressProgress;
-                        cc.save();
-                        cc.scale(tabScale, tabScale, centerX, centerY);
-                        cc.translate(bar.getPaddingLeft(), bar.getPaddingTop());
-                        menu.draw(cc);
-                        cc.restore();
+                    try {
+                        cc.drawRenderNode(backdropNode);
+                        ViewGroup menu = getMenuView();
+                        if (menu != null) {
+                            float tabScale = 1f + 0.2f * pressProgress;
+                            cc.save();
+                            cc.scale(tabScale, tabScale, centerX, centerY);
+                            cc.translate(bar.getPaddingLeft(), bar.getPaddingTop());
+                            menu.draw(cc);
+                            cc.restore();
+                        }
+                    } finally {
+                        pillCombinedNode.endRecording();
                     }
-                    pillCombinedNode.endRecording();
 
                     pillDispersionShader.setFloatUniform("size", pillRect.width(), pillRect.height());
                     pillDispersionShader.setFloatUniform("offset", -pillRect.left, -pillRect.top);
@@ -804,8 +850,11 @@ public final class LiquidGlassTabBar {
                     pillGlassNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(pillDispersionShader, "content"));
 
                     Canvas pg = pillGlassNode.beginRecording(w, h);
-                    pg.drawRenderNode(pillCombinedNode);
-                    pillGlassNode.endRecording();
+                    try {
+                        pg.drawRenderNode(pillCombinedNode);
+                    } finally {
+                        pillGlassNode.endRecording();
+                    }
                     canvas.drawRenderNode(pillGlassNode);
                 }
 
