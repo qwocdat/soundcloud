@@ -77,6 +77,8 @@ public final class LiquidGlassTabBar {
             "uniform float barRadius;\n" +
             "uniform float2 searchCenter;\n" +
             "uniform float searchRadius;\n" +
+            "uniform float2 dragDir;\n" +
+            "uniform float searchStretch;\n" +
             "uniform float smoothK;\n" +
             "uniform float2 miniCenter;\n" +
             "uniform float2 miniHalfSize;\n" +
@@ -101,17 +103,23 @@ public final class LiquidGlassTabBar {
             "    float h = max(k - abs(a - b), 0.0) / k;\n" +
             "    return min(a, b) - h * h * k * 0.25;\n" +
             "}\n" +
+            "float sdStretchedSearch(float2 p) {\n" +
+            "    float2 q = p - searchCenter;\n" +
+            "    float u = dot(q, dragDir);\n" +
+            "    float v = dot(q, float2(-dragDir.y, dragDir.x));\n" +
+            "    float sx = 1.0 + searchStretch * 0.36;\n" +
+            "    float sy = 1.0 / (1.0 + searchStretch * 0.16);\n" +
+            "    float2 scaled = float2(u / sx, v / sy);\n" +
+            "    return (length(scaled) - searchRadius) * min(sx, sy);\n" +
+            "}\n" +
             "float fieldSd(float2 p) {\n" +
-            "    float d = length(p - searchCenter) - searchRadius;\n" +
-            "    if (barAlpha > 0.02) {\n" +
-            "        float dBar = sdRoundedRect(p - barCenter, barHalfSize, barRadius);\n" +
-            "        d = smin(d, dBar, smoothK);\n" +
-            "    }\n" +
-            "    if (miniAlpha > 0.02) {\n" +
-            "        float dMini = sdRoundedRect(p - miniCenter, miniHalfSize, miniRadius);\n" +
-            "        d = smin(d, dMini, miniSmoothK);\n" +
-            "    }\n" +
-            "    return d;\n" +
+            "    float dSearch = sdStretchedSearch(p);\n" +
+            "    float dBar = (barAlpha > 0.02) ? sdRoundedRect(p - barCenter, barHalfSize, barRadius) : 10000.0;\n" +
+            "    float dMini = (miniAlpha > 0.02) ? sdRoundedRect(p - miniCenter, miniHalfSize, miniRadius) : 10000.0;\n" +
+            "    // Fuse ONLY Search<->TabBar and Search<->MiniPlayer; NEVER fuse TabBar<->MiniPlayer bodies!\n" +
+            "    float dBarFuse = (barAlpha > 0.02) ? smin(dSearch, dBar, smoothK) : dSearch;\n" +
+            "    float dMiniFuse = (miniAlpha > 0.02) ? smin(dSearch, dMini, miniSmoothK) : dSearch;\n" +
+            "    return min(dBarFuse, dMiniFuse);\n" +
             "}\n" +
             "float circleMap(float x) { return 1.0 - sqrt(max(0.0, 1.0 - x * x)); }\n" +
             "half4 main(float2 coord) {\n" +
@@ -147,14 +155,15 @@ public final class LiquidGlassTabBar {
             "    }\n" +
             "    // Blend surface glass tint\n" +
             "    half3 rgb = mix(glass.rgb, tintColor.rgb, tintColor.a);\n" +
-            "    // Touch-centered inner glow + specular bloom spreading across BOTH Search circle & TabBar\n" +
+            "    // Touch-centered inner glow + edge-following specular bloom (152100.mp4), clamped <= 0.34\n" +
             "    float distTouch = distance(coord, touchPoint);\n" +
             "    float radialGlow = clamp(exp(-distTouch / max(glowRadius, 1.0)) * touchGlow, 0.0, 1.0);\n" +
-            "    rgb += mix(tintColor.rgb, half3(0.92, 0.94, 0.98), half(0.55)) * half(clamp(radialGlow * 0.30, 0.0, 0.30));\n" +
+            "    float innerBoost = clamp(touchGlow * 0.10 + radialGlow * 0.24, 0.0, 0.34);\n" +
+            "    rgb += half3(0.88, 0.91, 0.96) * half(innerBoost);\n" +
             "    // Specular BloomStroke rim along the fused metaball contour + RGB prism tint at edge\n" +
-            "    float rimBand = smoothstep(2.3, 0.15, abs(sd));\n" +
+            "    float rimBand = smoothstep(2.4, 0.15, abs(sd));\n" +
             "    float spec = pow(max(dot(grad, lightDir), 0.0), 1.6) * 0.72 + pow(max(dot(grad, -lightDir), 0.0), 2.0) * 0.28 + 0.18;\n" +
-            "    spec += radialGlow * 0.95;\n" +
+            "    spec += radialGlow * 1.15;\n" +
             "    half3 rimColor = half3(1.0) + half3(0.18 * grad.x, 0.10 * -grad.y, -0.18 * grad.x) * half(chromaticAberration);\n" +
             "    rgb += rimColor * half(rimBand * spec);\n" +
             "    return half4(clamp(rgb, half3(0.0), half3(1.0)) * half(edgeMask), half(edgeMask));\n" +
@@ -383,12 +392,11 @@ public final class LiquidGlassTabBar {
 
         // Firm, weighted iOS 27 metaball drag on Search circle (allows dragging into TabBar to melt!)
         private boolean trackingSearchBtn = false;
-        // Tunable named constants for firm, weighted iOS 27 Search drag (LỖI 2)
-        private static final float DRAG_START_SLOP_DP = 12f;
-        private static final float DRAG_RESISTANCE = 0.42f;
-        private static final float MAX_PULL_MIN_DP = 84f;
-        private static final float MAX_PULL_MAX_DP = 120f;
-        private static final float MERGE_THRESHOLD_DP = 9f;
+        // Anchored iOS 27 jelly-stretch drag constants (matching 152100.mp4!)
+        private static final float DRAG_START_SLOP_DP = 8f;
+        private static final float DRAG_RESISTANCE = 0.22f;
+        private static final float MAX_ANCHOR_SHIFT_DP = 14f;
+        private static final float MERGE_THRESHOLD_DP = 7.5f;
 
         private static final int SEARCH_IDLE = 0;
         private static final int SEARCH_PRESSED = 1;
@@ -409,6 +417,12 @@ public final class LiquidGlassTabBar {
         private float miniMergeTarget = 0f;
         private float miniMergeVel = 0f;
         private float miniMergeGlow = 0f;
+        // Anchored elastic squash-and-stretch state (152100.mp4)
+        private float searchDragDirX = 1f;
+        private float searchDragDirY = 0f;
+        private float searchStretch = 0f;
+        private float searchStretchTarget = 0f;
+        private float searchStretchVel = 0f;
         private float searchPress = 0f;
         private float searchPressTarget = 0f;
         private float searchPressVel = 0f;
@@ -718,6 +732,7 @@ public final class LiquidGlassTabBar {
                 searchPressTarget = 1f;
                 searchOffsetTargetX = 0f;
                 searchOffsetTargetY = 0f;
+                searchStretchTarget = 0f;
                 scheduleFrame();
                 return;
             }
@@ -733,20 +748,22 @@ public final class LiquidGlassTabBar {
                         searchState = SEARCH_DRAGGING;
                     }
                     if (searchState == SEARCH_DRAGGING || searchState == SEARCH_MERGED) {
-                        // Weighted 2D vector rubber-band: heavy resistance (DRAG_RESISTANCE = 0.42),
-                        // progressive exponential resistance maxPull * (1 - exp(-raw / maxPull)),
-                        // MAX_PULL = 84..120dp so Search can firmly reach other tabs & Mini-Player!
-                        float targetReach = Math.max(outerRect.width() * 0.35f, dpf(MAX_PULL_MIN_DP));
-                        float maxPull = Math.max(dpf(MAX_PULL_MIN_DP), Math.min(dpf(MAX_PULL_MAX_DP), targetReach + dpf(12f)));
+                        // Anchored iOS 27 jelly button (152100.mp4): stays pinned near home spot (max 14dp shift)
+                        // while stretching elastically along the 2D finger vector toward TabBar / Mini-Player!
+                        float maxShift = dpf(MAX_ANCHOR_SHIFT_DP);
                         float len = (float) Math.hypot(dx, dy);
                         if (len > 0.001f) {
+                            searchDragDirX = dx / len;
+                            searchDragDirY = dy / len;
                             float effectiveLen = Math.max(0f, len - slopPx * 0.5f);
                             float rawWeighted = effectiveLen * DRAG_RESISTANCE;
-                            float pulled = maxPull * (1f - (float) Math.exp(-rawWeighted / maxPull));
-                            float ox = (dx / len) * pulled;
-                            float oy = (dy / len) * pulled;
-                            // Keep circle inside safe right & bottom screen edges (never clipped)
-                            float expandedRad = (searchRect.height() * 0.5f) * 1.12f;
+                            float pulled = maxShift * (1f - (float) Math.exp(-rawWeighted / maxShift));
+                            float ox = searchDragDirX * pulled;
+                            float oy = searchDragDirY * pulled;
+                            // Elastic stretch grows smoothly 0..1 as finger pulls away
+                            searchStretchTarget = 1f - (float) Math.exp(-effectiveLen / dpf(48f));
+                            // Keep anchored button inside safe right & bottom screen edges
+                            float expandedRad = (searchRect.height() * 0.5f) * 1.15f;
                             float safeMaxRight = Math.max(0f, (bar.getWidth() - dpf(4f)) - (searchRect.centerX() + expandedRad));
                             float safeMaxDown = Math.max(0f, (bar.getHeight() - dpf(3f)) - (searchRect.centerY() + expandedRad));
                             searchOffsetTargetX = Math.min(safeMaxRight, ox);
@@ -763,6 +780,7 @@ public final class LiquidGlassTabBar {
                     searchPressTarget = 0f;
                     searchOffsetTargetX = 0f;
                     searchOffsetTargetY = 0f;
+                    searchStretchTarget = 0f;
                     if (action == MotionEvent.ACTION_UP && wasTap) {
                         if (collapseProgress > 0.4f || collapseTarget > 0.5f) {
                             collapseTarget = 0f;
@@ -1431,6 +1449,11 @@ public final class LiquidGlassTabBar {
             miniMergeVel = s9[1];
             if (Math.abs(miniMergeProgress - miniMergeTarget) > 0.002f || Math.abs(miniMergeVel) > 0.005f) moving = true;
 
+            float[] s10 = stepSpring(searchStretch, searchStretchVel, searchStretchTarget, 460f, 0.62f, dt);
+            searchStretch = Math.max(0f, Math.min(1.25f, s10[0]));
+            searchStretchVel = s10[1];
+            if (Math.abs(searchStretch - searchStretchTarget) > 0.002f || Math.abs(searchStretchVel) > 0.005f) moving = true;
+
             if (searchState == SEARCH_RELEASING && searchPress < 0.01f
                     && barMergeProgress < 0.01f && miniMergeProgress < 0.01f
                     && Math.abs(searchOffsetX) < 0.3f && Math.abs(searchOffsetY) < 0.3f) {
@@ -1665,27 +1688,8 @@ public final class LiquidGlassTabBar {
                 // the seamless liquid glass material BEHIND this Mini-Player (Z=32dp); skip opaque bg here
                 // so native text, artwork, play button & progress bar render 100% intact on top!
                 if (miniMergeProgress > 0.04f && collapseProgress < 0.35f) {
-                    if (Build.VERSION.SDK_INT >= 33 && miniMergeGlow > 0.01f && highlightShader != null) {
-                        canvas.save();
-                        miniClipPath.reset();
-                        miniClipPath.addRoundRect(miniRect, radius, radius, Path.Direction.CW);
-                        canvas.clipPath(miniClipPath);
-                        float clampedGlow = Math.max(0f, Math.min(0.32f, miniMergeGlow * 0.32f));
-                        Paint mpGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-                        float glowX = Math.max(miniRect.left, Math.min(miniRect.right,
-                                miniRect.right - dpf(28f) + searchOffsetX));
-                        float glowY = miniRect.bottom;
-                        int glowColor = dark
-                                ? Color.argb(Math.round(255f * clampedGlow), 195, 208, 232)
-                                : Color.argb(Math.round(255f * clampedGlow * 0.7f), 255, 255, 255);
-                        highlightShader.setFloatUniform("size", miniRect.width(), miniRect.height());
-                        highlightShader.setColorUniform("color", glowColor);
-                        highlightShader.setFloatUniform("radius", miniRect.height() * 1.35f);
-                        highlightShader.setFloatUniform("position", glowX, glowY);
-                        mpGlow.setShader(highlightShader);
-                        canvas.drawRect(miniRect, mpGlow);
-                        canvas.restore();
-                    }
+                    // Yield completely to bar's unified metaballGlassNode (Z=28dp) which already
+                    // renders the fused liquid glass + clamped glow behind our native text & icons (Z=32dp)!
                     return;
                 }
 
@@ -1740,25 +1744,7 @@ public final class LiquidGlassTabBar {
                 surfacePaint.setColor(dark ? Color.argb(surfAlpha, 24, 24, 28) : Color.argb(surfAlpha, 245, 247, 252));
                 canvas.drawRoundRect(miniRect, radius, radius, surfacePaint);
 
-                // Soft, clamped (0..0.32) background-tinted glow ONLY when Search actually approaches/merges Mini-Player
-                // Uses SRC_OVER (NEVER BlendMode.PLUS white wash!) so Mini-Player never blows out to solid white!
-                if (Build.VERSION.SDK_INT >= 33 && miniMergeGlow > 0.01f && highlightShader != null) {
-                    float clampedGlow = Math.max(0f, Math.min(0.32f, miniMergeGlow * 0.32f));
-                    Paint mpGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    float glowX = Math.max(miniRect.left, Math.min(miniRect.right,
-                            miniRect.right - dpf(28f) + searchOffsetX));
-                    float glowY = miniRect.bottom;
-                    // Subtle glass-tinted color matching theme (not pure harsh white)
-                    int glowColor = dark
-                            ? Color.argb(Math.round(255f * clampedGlow), 195, 208, 232)
-                            : Color.argb(Math.round(255f * clampedGlow * 0.7f), 255, 255, 255);
-                    highlightShader.setFloatUniform("size", miniRect.width(), miniRect.height());
-                    highlightShader.setColorUniform("color", glowColor);
-                    highlightShader.setFloatUniform("radius", miniRect.height() * 1.35f);
-                    highlightShader.setFloatUniform("position", glowX, glowY);
-                    mpGlow.setShader(highlightShader);
-                    canvas.drawRect(miniRect, mpGlow);
-                }
+
                 canvas.restore();
 
                 drawBloomRim(canvas, miniRect, radius, 0.75f, -45f);
@@ -1818,10 +1804,14 @@ public final class LiquidGlassTabBar {
                 boolean allowMerge = (searchState == SEARCH_DRAGGING || searchState == SEARCH_MERGED);
                 float dMaxMerge = dpf(MERGE_THRESHOLD_DP);
 
-                // Target 1: TabBar rounded-rect SDF distance from Search circle edge
+                // Effective stretched radius toward each target so the elongated jelly lobe triggers fusion cleanly!
+                float stretchReachLeft = sRad * (1f + searchStretch * 0.36f * Math.max(0f, -searchDragDirX));
+                float stretchReachUp = sRad * (1f + searchStretch * 0.36f * Math.max(0f, -searchDragDirY));
+
+                // Target 1: TabBar rounded-rect SDF distance from Search stretched edge
                 float qBarX = Math.max(0f, Math.abs(sCx - barCx) - (barHalfW - barRad));
                 float qBarY = Math.max(0f, Math.abs(sCy - barCy) - (barHalfH - barRad));
-                float distToBar = ((float) Math.hypot(qBarX, qBarY) - barRad) - sRad;
+                float distToBar = ((float) Math.hypot(qBarX, qBarY) - barRad) - stretchReachLeft;
 
                 // Target 2: Mini-Player rounded-rect SDF distance from Search circle edge
                 float miniCx = 0f, miniCy = -9999f, miniHalfW = 1f, miniHalfH = 1f, miniRad = 1f;
@@ -1842,7 +1832,7 @@ public final class LiquidGlassTabBar {
                     miniRad = miniHalfH;
                     float qMiniX = Math.max(0f, Math.abs(sCx - miniCx) - (miniHalfW - miniRad));
                     float qMiniY = Math.max(0f, Math.abs(sCy - miniCy) - (miniHalfH - miniRad));
-                    distToMini = ((float) Math.hypot(qMiniX, qMiniY) - miniRad) - sRad;
+                    distToMini = ((float) Math.hypot(qMiniX, qMiniY) - miniRad) - stretchReachUp;
                 }
 
                 // Evaluate BOTH targets independently (no argmin / else-if!)
@@ -1916,6 +1906,8 @@ public final class LiquidGlassTabBar {
                     metaballShader.setFloatUniform("barRadius", barRad);
                     metaballShader.setFloatUniform("searchCenter", sCx, sCy + topPad);
                     metaballShader.setFloatUniform("searchRadius", sRad);
+                    metaballShader.setFloatUniform("dragDir", searchDragDirX, searchDragDirY);
+                    metaballShader.setFloatUniform("searchStretch", searchStretch);
                     metaballShader.setFloatUniform("smoothK", smoothK);
                     metaballShader.setFloatUniform("miniCenter", miniCx, miniCy + topPad);
                     metaballShader.setFloatUniform("miniHalfSize", miniHalfW, miniHalfH);
