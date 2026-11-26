@@ -320,7 +320,7 @@ public final class LiquidGlassControls {
 
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            setMeasuredDimension(Math.round(88f * density), Math.round(50f * density));
+            setMeasuredDimension(Math.round(92f * density), Math.round(54f * density));
         }
 
         @Override
@@ -399,7 +399,7 @@ public final class LiquidGlassControls {
             if (w <= 0 || h <= 0) return;
 
             float trackW = 64f * density;
-            float trackH = 28f * density;
+            float trackH = 26f * density;
             float cxView = w * 0.5f;
             float cyView = h * 0.5f;
             trackRect.set(cxView - trackW * 0.5f, cyView - trackH * 0.5f,
@@ -415,23 +415,31 @@ public final class LiquidGlassControls {
             // 1. Draw track first; thumb always draws on top with zero track clipping
             canvas.drawRoundRect(trackRect, tr, tr, trackPaint);
 
-            // 2. Thumb geometry centered on track Y, overhanging cleanly when held
+            // 2. Held Switch thumb is ~42% taller than track (37dp vs 26dp) and wider (54dp),
+            // overhanging top, bottom & active outer end so dark card backdrop enters the lens rim!
             float glassMix = smoothstep(0.05f, 0.85f, pressProgress);
             float restW = 38f * density;
-            float restH = 24f * density;
-            float thumbW = restW + 14f * density * pressProgress;
-            float thumbH = restH + 12f * density * pressProgress;
+            float restH = 22f * density;
+            float thumbW = restW + 16f * density * pressProgress;
+            float thumbH = restH + 15f * density * pressProgress;
 
             float minCx = trackRect.left + 2f * density + restW * 0.5f;
             float maxCx = trackRect.right - 2f * density - restW * 0.5f;
-            float tcx = minCx + (maxCx - minCx) * pos;
+            float outwardShift = (pos * 2f - 1f) * 3.5f * density * pressProgress;
+            float tcx = minCx + (maxCx - minCx) * pos + outwardShift;
             thumbRect.set(tcx - thumbW * 0.5f, cyView - thumbH * 0.5f,
                     tcx + thumbW * 0.5f, cyView + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
 
-            // 3. Shared LiquidGlassLens (same TabBar shader + zoom + RGB dispersion, zero black block!)
-            glassLens.drawThumbLens(canvas, getContext(), density, w, h, thumbRect, thr, glassMix,
-                    bc -> bc.drawRoundRect(trackRect, tr, tr, trackPaint));
+            // 3. Shared LiquidGlassLens (exact same shader/uniforms as Slider & TabBar!):
+            // Scale track vertically inside backdrop so dark card surround fills the outer bevel rim
+            // identically to Slider — creating crisp dark edge refraction + RGB dispersion around the green/grey core!
+            glassLens.drawThumbLens(canvas, getContext(), density, w, h, thumbRect, thr, glassMix, bc -> {
+                bc.save();
+                bc.scale(0.88f, 0.64f, trackRect.centerX(), trackRect.centerY());
+                bc.drawRoundRect(trackRect, tr, tr, trackPaint);
+                bc.restore();
+            });
 
             // 4. Smooth white pill crossfade driven by pressProgress
             int whiteAlpha = Math.round(255f * (1f - glassMix));

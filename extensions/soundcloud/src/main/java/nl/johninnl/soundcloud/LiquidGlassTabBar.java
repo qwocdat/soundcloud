@@ -102,15 +102,16 @@ public final class LiquidGlassTabBar {
             "    return min(a, b) - h * h * k * 0.25;\n" +
             "}\n" +
             "float fieldSd(float2 p) {\n" +
-            "    float dBar = (barAlpha > 0.02) ? sdRoundedRect(p - barCenter, barHalfSize, barRadius) : 10000.0;\n" +
-            "    float dSearch = length(p - searchCenter) - searchRadius;\n" +
-            "    float dBarSearch = smin(dBar, dSearch, smoothK);\n" +
-            "    if (miniAlpha > 0.02 && miniSmoothK > 0.01) {\n" +
-            "        float dMini = sdRoundedRect(p - miniCenter, miniHalfSize, miniRadius);\n" +
-            "        float dSearchMini = smin(dSearch, dMini, miniSmoothK);\n" +
-            "        return min(dBarSearch, dSearchMini);\n" +
+            "    float d = length(p - searchCenter) - searchRadius;\n" +
+            "    if (barAlpha > 0.02) {\n" +
+            "        float dBar = sdRoundedRect(p - barCenter, barHalfSize, barRadius);\n" +
+            "        d = smin(d, dBar, smoothK);\n" +
             "    }\n" +
-            "    return dBarSearch;\n" +
+            "    if (miniAlpha > 0.02) {\n" +
+            "        float dMini = sdRoundedRect(p - miniCenter, miniHalfSize, miniRadius);\n" +
+            "        d = smin(d, dMini, miniSmoothK);\n" +
+            "    }\n" +
+            "    return d;\n" +
             "}\n" +
             "float circleMap(float x) { return 1.0 - sqrt(max(0.0, 1.0 - x * x)); }\n" +
             "half4 main(float2 coord) {\n" +
@@ -382,6 +383,13 @@ public final class LiquidGlassTabBar {
 
         // Firm, weighted iOS 27 metaball drag on Search circle (allows dragging into TabBar to melt!)
         private boolean trackingSearchBtn = false;
+        // Tunable named constants for firm, weighted iOS 27 Search drag (LỖI 2)
+        private static final float DRAG_START_SLOP_DP = 12f;
+        private static final float DRAG_RESISTANCE = 0.42f;
+        private static final float MAX_PULL_MIN_DP = 84f;
+        private static final float MAX_PULL_MAX_DP = 120f;
+        private static final float MERGE_THRESHOLD_DP = 9f;
+
         private static final int SEARCH_IDLE = 0;
         private static final int SEARCH_PRESSED = 1;
         private static final int SEARCH_DRAGGING = 2;
@@ -392,6 +400,14 @@ public final class LiquidGlassTabBar {
         private float searchDownY = 0f;
         private float searchTouchX = 0f;
         private float searchTouchY = 0f;
+
+        // Independent spring-animated merge progress for BOTH TabBar and Mini-Player (LỖI 4)
+        private float barMergeProgress = 0f;
+        private float barMergeTarget = 0f;
+        private float barMergeVel = 0f;
+        private float miniMergeProgress = 0f;
+        private float miniMergeTarget = 0f;
+        private float miniMergeVel = 0f;
         private float miniMergeGlow = 0f;
         private float searchPress = 0f;
         private float searchPressTarget = 0f;
@@ -711,27 +727,22 @@ public final class LiquidGlassTabBar {
                     searchTouchY = y;
                     float dx = x - searchDownX;
                     float dy = y - searchDownY;
+                    float slopPx = dpf(DRAG_START_SLOP_DP);
                     float distSq = dx * dx + dy * dy;
-                    if (searchState == SEARCH_PRESSED && distSq > touchSlopSq) {
+                    if (searchState == SEARCH_PRESSED && distSq > slopPx * slopPx) {
                         searchState = SEARCH_DRAGGING;
                     }
                     if (searchState == SEARCH_DRAGGING || searchState == SEARCH_MERGED) {
-                        // True 2D vector-length rubber-band drag (no axis locking!)
-                        // maxPull = max(nearestGap + 8dp, 20dp) so it can reach BOTH TabBar and Mini-Player
-                        float gapBar = Math.max(0f, searchRect.left - outerRect.right);
-                        float nearestGap = gapBar;
-                        if (isMiniPlayerCollapsedAndVisible() && miniPlayerPill != null && collapseProgress < 0.35f) {
-                            int[] bLoc = new int[2], mLoc = new int[2];
-                            bar.getLocationOnScreen(bLoc);
-                            miniPlayerPill.getLocationOnScreen(mLoc);
-                            float miniBottomLocal = (mLoc[1] - bLoc[1]) + miniPlayerPill.getHeight() - dpf(2f);
-                            float gapMini = Math.max(0f, searchRect.top - miniBottomLocal);
-                            nearestGap = Math.max(gapBar, Math.min(gapMini, dpf(20f)));
-                        }
-                        float maxPull = Math.min(dpf(26f), Math.max(nearestGap + dpf(8f), dpf(20f)));
+                        // Weighted 2D vector rubber-band: heavy resistance (DRAG_RESISTANCE = 0.42),
+                        // progressive exponential resistance maxPull * (1 - exp(-raw / maxPull)),
+                        // MAX_PULL = 84..120dp so Search can firmly reach other tabs & Mini-Player!
+                        float targetReach = Math.max(outerRect.width() * 0.35f, dpf(MAX_PULL_MIN_DP));
+                        float maxPull = Math.max(dpf(MAX_PULL_MIN_DP), Math.min(dpf(MAX_PULL_MAX_DP), targetReach + dpf(12f)));
                         float len = (float) Math.hypot(dx, dy);
                         if (len > 0.001f) {
-                            float pulled = maxPull * (float) Math.tanh(len / (maxPull * 1.65f));
+                            float effectiveLen = Math.max(0f, len - slopPx * 0.5f);
+                            float rawWeighted = effectiveLen * DRAG_RESISTANCE;
+                            float pulled = maxPull * (1f - (float) Math.exp(-rawWeighted / maxPull));
                             float ox = (dx / len) * pulled;
                             float oy = (dy / len) * pulled;
                             // Keep circle inside safe right & bottom screen edges (never clipped)
@@ -1339,7 +1350,9 @@ public final class LiquidGlassTabBar {
                 menu.setAlpha(Math.max(0f, 1f - p * 1.4f));
             }
             if (miniActive && miniPlayerSheet != null) {
-                miniPlayerSheet.setZ(dpf(18f));
+                // Keep Mini-Player foreground content ABOVE bar's metaball glass (28dp) when expanded (p < 0.5)
+                // so text, artwork, play button & progress bar are NEVER covered when fusing!
+                miniPlayerSheet.setZ(p < 0.5f ? dpf(32f) : dpf(18f));
                 float dropDist = outerRect.height() > 0f ? outerRect.height() + dpf(8f) : dpf(66f);
                 float pullUpReaction = (searchOffsetY < 0f) ? (searchOffsetY * 0.22f) : 0f;
                 miniPlayerSheet.setTranslationY(p * dropDist + pullUpReaction);
@@ -1408,7 +1421,18 @@ public final class LiquidGlassTabBar {
             searchOffsetY = s7[0];
             searchOffsetVelY = s7[1];
             if (Math.abs(searchOffsetY - searchOffsetTargetY) > 0.1f || Math.abs(searchOffsetVelY) > 0.5f) moving = true;
+            float[] s8 = stepSpring(barMergeProgress, barMergeVel, barMergeTarget, 380f, 0.78f, dt);
+            barMergeProgress = Math.max(0f, Math.min(1f, s8[0]));
+            barMergeVel = s8[1];
+            if (Math.abs(barMergeProgress - barMergeTarget) > 0.002f || Math.abs(barMergeVel) > 0.005f) moving = true;
+
+            float[] s9 = stepSpring(miniMergeProgress, miniMergeVel, miniMergeTarget, 380f, 0.78f, dt);
+            miniMergeProgress = Math.max(0f, Math.min(1f, s9[0]));
+            miniMergeVel = s9[1];
+            if (Math.abs(miniMergeProgress - miniMergeTarget) > 0.002f || Math.abs(miniMergeVel) > 0.005f) moving = true;
+
             if (searchState == SEARCH_RELEASING && searchPress < 0.01f
+                    && barMergeProgress < 0.01f && miniMergeProgress < 0.01f
                     && Math.abs(searchOffsetX) < 0.3f && Math.abs(searchOffsetY) < 0.3f) {
                 searchState = SEARCH_IDLE;
             }
@@ -1503,7 +1527,7 @@ public final class LiquidGlassTabBar {
                 if (miniBackdropNode == null) miniBackdropNode = new RenderNode("sc_mini_backdrop");
                 node = miniBackdropNode;
             }
-            int topPad = isTabBar ? Math.round(dpf(80f)) : 0;
+            int topPad = isTabBar ? Math.round(dpf(110f)) : 0;
             node.setPosition(0, -topPad, w, h);
 
             int[] targetLoc = new int[2];
@@ -1637,6 +1661,34 @@ public final class LiquidGlassTabBar {
                 miniRect.set(dpf(2f), dpf(2f), w - dpf(2f), h - dpf(2f));
                 float radius = miniRect.height() * 0.5f;
 
+                // While fused with Search button, bar's unified metaballGlassNode (Z=28dp) already renders
+                // the seamless liquid glass material BEHIND this Mini-Player (Z=32dp); skip opaque bg here
+                // so native text, artwork, play button & progress bar render 100% intact on top!
+                if (miniMergeProgress > 0.04f && collapseProgress < 0.35f) {
+                    if (Build.VERSION.SDK_INT >= 33 && miniMergeGlow > 0.01f && highlightShader != null) {
+                        canvas.save();
+                        miniClipPath.reset();
+                        miniClipPath.addRoundRect(miniRect, radius, radius, Path.Direction.CW);
+                        canvas.clipPath(miniClipPath);
+                        float clampedGlow = Math.max(0f, Math.min(0.32f, miniMergeGlow * 0.32f));
+                        Paint mpGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+                        float glowX = Math.max(miniRect.left, Math.min(miniRect.right,
+                                miniRect.right - dpf(28f) + searchOffsetX));
+                        float glowY = miniRect.bottom;
+                        int glowColor = dark
+                                ? Color.argb(Math.round(255f * clampedGlow), 195, 208, 232)
+                                : Color.argb(Math.round(255f * clampedGlow * 0.7f), 255, 255, 255);
+                        highlightShader.setFloatUniform("size", miniRect.width(), miniRect.height());
+                        highlightShader.setColorUniform("color", glowColor);
+                        highlightShader.setFloatUniform("radius", miniRect.height() * 1.35f);
+                        highlightShader.setFloatUniform("position", glowX, glowY);
+                        mpGlow.setShader(highlightShader);
+                        canvas.drawRect(miniRect, mpGlow);
+                        canvas.restore();
+                    }
+                    return;
+                }
+
                 shadowPaint.setColor(Color.TRANSPARENT);
                 shadowPaint.setShadowLayer(dpf(10f), 0f, dpf(3f),
                         Color.argb(dark ? 56 : 28, 0, 0, 0));
@@ -1750,7 +1802,7 @@ public final class LiquidGlassTabBar {
                 int w = bar.getWidth();
                 int h = bar.getHeight();
 
-                int topPad = Math.round(dpf(80f));
+                int topPad = Math.round(dpf(110f));
 
                 // Compute animated Search circle center & radius:
                 // Allow pulling freely UP past y = 0 toward Mini-Player while keeping safe right/bottom margins!
@@ -1760,10 +1812,11 @@ public final class LiquidGlassTabBar {
                 float sCx = Math.max(sRad + safePadX, Math.min(w - sRad - safePadX, searchRect.centerX() + searchOffsetX));
                 float sCy = Math.max(-topPad + sRad + safePadY, Math.min(h - sRad - safePadY, searchRect.centerY() + searchOffsetY));
 
-                // Unified merge-target list: TabBar AND Mini-Player evaluated identically in bar-local coords!
-                // In IDLE or PRESSED (before dragging): smoothK = 0 (NO premature merge!).
-                boolean allowMerge = (searchState == SEARCH_DRAGGING || searchState == SEARCH_MERGED || searchState == SEARCH_RELEASING);
-                float dMaxMerge = dpf(7.5f);
+                // Simultaneous multi-target SDF evaluation (LỖI 4 FIX):
+                // TabBar AND Mini-Player each have independent spring-animated mergeProgress (0..1).
+                // Touching both at once fuses ALL THREE into one seamless liquid body!
+                boolean allowMerge = (searchState == SEARCH_DRAGGING || searchState == SEARCH_MERGED);
+                float dMaxMerge = dpf(MERGE_THRESHOLD_DP);
 
                 // Target 1: TabBar rounded-rect SDF distance from Search circle edge
                 float qBarX = Math.max(0f, Math.abs(sCx - barCx) - (barHalfW - barRad));
@@ -1792,27 +1845,29 @@ public final class LiquidGlassTabBar {
                     distToMini = ((float) Math.hypot(qMiniX, qMiniY) - miniRad) - sRad;
                 }
 
-                // Select nearest target & apply identical k = k0 * (1 - smoothstep(0, dMax, dist))
-                float barProx = 0f;
-                float miniProx = 0f;
-                if (allowMerge) {
-                    if (distToMini < distToBar && distToMini <= dMaxMerge) {
-                        float tM = Math.max(0f, Math.min(1f, distToMini / dMaxMerge));
-                        miniProx = 1f - (tM * tM * (3f - 2f * tM));
-                    } else if (distToBar <= dMaxMerge) {
-                        float tB = Math.max(0f, Math.min(1f, distToBar / dMaxMerge));
-                        barProx = 1f - (tB * tB * (3f - 2f * tB));
-                    }
+                // Evaluate BOTH targets independently (no argmin / else-if!)
+                if (allowMerge && distToBar <= dMaxMerge) {
+                    float tB = Math.max(0f, Math.min(1f, distToBar / dMaxMerge));
+                    barMergeTarget = 1f - (tB * tB * (3f - 2f * tB));
+                } else {
+                    barMergeTarget = 0f;
                 }
-                float smoothK = dpf(36f) * barProx + dpf(18f) * p;
-                float miniSmoothK = dpf(36f) * miniProx;
-                float miniAlphaVal = (miniSmoothK > 0.5f) ? 1f : 0f;
-                miniMergeGlow = miniProx * searchPress;
+                if (allowMerge && distToMini <= dMaxMerge) {
+                    float tM = Math.max(0f, Math.min(1f, distToMini / dMaxMerge));
+                    miniMergeTarget = 1f - (tM * tM * (3f - 2f * tM));
+                } else {
+                    miniMergeTarget = 0f;
+                }
 
-                if (searchState == SEARCH_DRAGGING && (barProx > 0.05f || miniProx > 0.05f)) {
+                float smoothK = dpf(38f) * barMergeProgress + dpf(18f) * p;
+                float miniSmoothK = dpf(38f) * miniMergeProgress;
+                float miniAlphaVal = (miniMergeProgress > 0.04f) ? 1f : 0f;
+                miniMergeGlow = miniMergeProgress * searchPress;
+
+                if (searchState == SEARCH_DRAGGING && (barMergeTarget > 0.05f || miniMergeTarget > 0.05f)) {
                     searchState = SEARCH_MERGED;
                 }
-                float proxSmooth = Math.max(barProx, miniProx);
+                float proxSmooth = Math.max(barMergeProgress, miniMergeProgress);
 
                 // Active touchPoint & touchGlow for unified inner glow + specular bloom on BOTH TabBar & Search!
                 float activeGlow = Math.max(searchPress, pressProgress);
@@ -2073,7 +2128,7 @@ public final class LiquidGlassTabBar {
                     int bh = bar.getHeight();
                     float cr = (searchRect.height() * 0.5f) * (1f + 0.12f * searchPress);
                     float cx = Math.max(cr + dpf(3f), Math.min(bw - cr - dpf(3f), searchRect.centerX() + searchOffsetX));
-                    float cy = Math.max(-dpf(80f) + cr + dpf(2f), Math.min(bh - cr - dpf(2f), searchRect.centerY() + searchOffsetY));
+                    float cy = Math.max(-dpf(110f) + cr + dpf(2f), Math.min(bh - cr - dpf(2f), searchRect.centerY() + searchOffsetY));
 
                     int activeOrange = Color.rgb(255, 122, 56);
                     int baseColor = (searchTabSelected || searchPress > 0.35f) && p < 0.5f
