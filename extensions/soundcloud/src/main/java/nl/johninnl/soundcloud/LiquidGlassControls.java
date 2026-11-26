@@ -36,7 +36,57 @@ public final class LiquidGlassControls {
 
     private LiquidGlassControls() {}
 
+    // Used by LiquidGlassTabBar (pillDispersionShader & miniLensShader) — keep exact uniform names!
     static final String PILL_REFRACTION_DISPERSION_SHADER =
+            "uniform shader content;\n" +
+            "uniform float2 size;\n" +
+            "uniform float2 offset;\n" +
+            "uniform float4 cornerRadii;\n" +
+            "uniform float refractionHeight;\n" +
+            "uniform float refractionAmount;\n" +
+            "uniform float depthEffect;\n" +
+            "uniform float chromaticAberration;\n" +
+            "float radiusAt(float2 coord, float4 radii) {\n" +
+            "    if (coord.x >= 0.0) { return coord.y <= 0.0 ? radii.y : radii.z; }\n" +
+            "    else { return coord.y <= 0.0 ? radii.x : radii.w; }\n" +
+            "}\n" +
+            "float sdRoundedRect(float2 coord, float2 halfSize, float radius) {\n" +
+            "    float2 q = abs(coord) - (halfSize - float2(radius));\n" +
+            "    return length(max(q, 0.0)) - radius + min(max(q.x, q.y), 0.0);\n" +
+            "}\n" +
+            "float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {\n" +
+            "    float2 q = abs(coord) - (halfSize - float2(radius));\n" +
+            "    if (q.x >= 0.0 || q.y >= 0.0) return sign(coord) * normalize(max(q, 0.0));\n" +
+            "    float gx = step(q.y, q.x);\n" +
+            "    return sign(coord) * float2(gx, 1.0 - gx);\n" +
+            "}\n" +
+            "float circleMap(float x) { return 1.0 - sqrt(max(0.0, 1.0 - x * x)); }\n" +
+            "half4 main(float2 coord) {\n" +
+            "    float2 halfSize = size * 0.5;\n" +
+            "    float2 c = (coord + offset) - halfSize;\n" +
+            "    float r = radiusAt(c, cornerRadii);\n" +
+            "    float sd = sdRoundedRect(c, halfSize, r);\n" +
+            "    if (-sd >= refractionHeight) return content.eval(coord);\n" +
+            "    sd = min(sd, 0.0);\n" +
+            "    float d = circleMap(1.0 - -sd / max(refractionHeight, 0.001)) * refractionAmount;\n" +
+            "    float gr = min(r * 1.5, min(halfSize.x, halfSize.y));\n" +
+            "    float2 grad = normalize(gradSdRoundedRect(c, halfSize, gr) + depthEffect * normalize(c + float2(0.0001)));\n" +
+            "    float2 rc = coord + d * grad;\n" +
+            "    float di = chromaticAberration * ((c.x * c.y) / max(halfSize.x * halfSize.y, 1.0));\n" +
+            "    float2 dc = d * grad * di;\n" +
+            "    half4 col = half4(0.0);\n" +
+            "    half4 red = content.eval(rc + dc); col.r += red.r / 3.5; col.a += red.a / 7.0;\n" +
+            "    half4 org = content.eval(rc + dc * 0.6667); col.r += org.r / 3.5; col.g += org.g / 7.0; col.a += org.a / 7.0;\n" +
+            "    half4 yel = content.eval(rc + dc * 0.3333); col.r += yel.r / 3.5; col.g += yel.g / 3.5; col.a += yel.a / 7.0;\n" +
+            "    half4 grn = content.eval(rc); col.g += grn.g / 3.5; col.a += grn.a / 7.0;\n" +
+            "    half4 cyn = content.eval(rc - dc * 0.3333); col.g += cyn.g / 3.5; col.b += cyn.b / 3.0; col.a += cyn.a / 7.0;\n" +
+            "    half4 blu = content.eval(rc - dc * 0.6667); col.b += blu.b / 3.0; col.a += blu.a / 7.0;\n" +
+            "    half4 pur = content.eval(rc - dc); col.r += pur.r / 7.0; col.b += pur.b / 3.0; col.a += pur.a / 7.0;\n" +
+            "    return col;\n" +
+            "}\n";
+
+    // Dedicated shader for Switch & Slider crystal glass thumb (1:1 flat core + edge-band refraction)
+    private static final String THUMB_REFRACTION_DISPERSION_SHADER =
             "uniform shader content;\n" +
             "uniform float2 size;\n" +
             "uniform float2 offset;\n" +
@@ -230,7 +280,7 @@ public final class LiquidGlassControls {
             glintPaint.setStyle(Paint.Style.STROKE);
             glintPaint.setStrokeWidth(0.75f * density);
             if (Build.VERSION.SDK_INT >= 33) {
-                glassShader = new RuntimeShader(PILL_REFRACTION_DISPERSION_SHADER);
+                glassShader = new RuntimeShader(THUMB_REFRACTION_DISPERSION_SHADER);
             }
         }
 
@@ -483,7 +533,7 @@ public final class LiquidGlassControls {
             glintPaint.setStyle(Paint.Style.STROKE);
             glintPaint.setStrokeWidth(0.75f * density);
             if (Build.VERSION.SDK_INT >= 33) {
-                glassShader = new RuntimeShader(PILL_REFRACTION_DISPERSION_SHADER);
+                glassShader = new RuntimeShader(THUMB_REFRACTION_DISPERSION_SHADER);
             }
         }
 
