@@ -19,13 +19,16 @@ import android.view.MotionEvent;
 import android.view.View;
 
 /**
- * Real AGSL + RenderNode iOS 26/27 Liquid Glass controls:
- * - Ios27GlassSwitch: long capsule track (66x28dp) with horizontal white pill thumb (39x23dp)
- *   that dissolves into an oversized crystal-clear AGSL refracting & 7-band chromatic-dispersing
- *   glass pill (55x38dp) when held/dragged.
- * - Ios27GlassSlider: horizontal white pill thumb (36x20dp) that expands into the same real
- *   AGSL refracting crystal glass pill (50x32dp) over the slider track.
- * - VietQrView: verified offline VietQR for VietinBank (970415) STK 0989249990.
+ * Real AGSL + RenderNode iOS 26/27 Liquid Glass Switch & Slider + Offline VietQR.
+ *
+ * Key fixes:
+ * - Crystal-clear core: no dark dim/tint layer; only subtle blur + edge-bevel refraction
+ *   sampling the actual vibrant track behind the thumb (bright #34C759 ON, #48484A OFF).
+ * - Thin specular bevel rim with RGB chromatic dispersion strictly at the outer rim
+ *   (wired to user's "Tán sắc RGB" preference) and brighter top-left highlight.
+ * - Thumb centered strictly on the track center, drawn on top of track & track border
+ *   with zero track-clipping so the rim merges seamlessly during expand/shrink.
+ * - Single spring `pressProgress` (0 -> 1) smoothly drives scale, glass opacity, blur, and refraction.
  */
 @SuppressLint("NewApi")
 public final class LiquidGlassControls {
@@ -61,24 +64,41 @@ public final class LiquidGlassControls {
             "    float2 c = (coord + offset) - halfSize;\n" +
             "    float r = radiusAt(c, cornerRadii);\n" +
             "    float sd = sdRoundedRect(c, halfSize, r);\n" +
-            "    if (-sd >= refractionHeight) return content.eval(coord);\n" +
+            "    // Core interior: crystal clear direct sample of the track underneath\n" +
+            "    if (-sd >= refractionHeight || refractionHeight <= 0.5) {\n" +
+            "        return content.eval(coord);\n" +
+            "    }\n" +
             "    sd = min(sd, 0.0);\n" +
-            "    float d = circleMap(1.0 - -sd / max(refractionHeight, 0.001)) * refractionAmount;\n" +
-            "    float gr = min(r * 1.5, min(halfSize.x, halfSize.y));\n" +
+            "    float edgeT = clamp(1.0 - (-sd / max(refractionHeight, 0.001)), 0.0, 1.0);\n" +
+            "    float d = circleMap(edgeT) * refractionAmount;\n" +
+            "    float gr = min(r * 1.35, min(halfSize.x, halfSize.y));\n" +
             "    float2 grad = normalize(gradSdRoundedRect(c, halfSize, gr) + depthEffect * normalize(c + float2(0.0001)));\n" +
             "    float2 rc = coord + d * grad;\n" +
-            "    float di = chromaticAberration * ((c.x * c.y) / max(halfSize.x * halfSize.y, 1.0));\n" +
-            "    float2 dc = d * grad * di;\n" +
-            "    half4 col = half4(0.0);\n" +
-            "    half4 red = content.eval(rc + dc); col.r += red.r / 3.5; col.a += red.a / 7.0;\n" +
-            "    half4 org = content.eval(rc + dc * 0.6667); col.r += org.r / 3.5; col.g += org.g / 7.0; col.a += org.a / 7.0;\n" +
-            "    half4 yel = content.eval(rc + dc * 0.3333); col.r += yel.r / 3.5; col.g += yel.g / 3.5; col.a += yel.a / 7.0;\n" +
-            "    half4 grn = content.eval(rc); col.g += grn.g / 3.5; col.a += grn.a / 7.0;\n" +
-            "    half4 cyn = content.eval(rc - dc * 0.3333); col.g += cyn.g / 3.5; col.b += cyn.b / 3.0; col.a += cyn.a / 7.0;\n" +
-            "    half4 blu = content.eval(rc - dc * 0.6667); col.b += blu.b / 3.0; col.a += blu.a / 7.0;\n" +
-            "    half4 pur = content.eval(rc - dc); col.r += pur.r / 7.0; col.b += pur.b / 3.0; col.a += pur.a / 7.0;\n" +
-            "    return col;\n" +
+            "    // Thin RGB chromatic dispersion strictly on the outer bevel rim\n" +
+            "    float rimWeight = smoothstep(0.15, 1.0, edgeT);\n" +
+            "    if (chromaticAberration > 0.01 && rimWeight > 0.01) {\n" +
+            "        float2 dc = grad * (d * chromaticAberration * 0.55 * rimWeight);\n" +
+            "        half4 col = half4(0.0);\n" +
+            "        half4 red = content.eval(rc + dc);          col.r += red.r / 3.5; col.a += red.a / 7.0;\n" +
+            "        half4 org = content.eval(rc + dc * 0.6667); col.r += org.r / 3.5; col.g += org.g / 7.0; col.a += org.a / 7.0;\n" +
+            "        half4 yel = content.eval(rc + dc * 0.3333); col.r += yel.r / 3.5; col.g += yel.g / 3.5; col.a += yel.a / 7.0;\n" +
+            "        half4 grn = content.eval(rc);               col.g += grn.g / 3.5; col.a += grn.a / 7.0;\n" +
+            "        half4 cyn = content.eval(rc - dc * 0.3333); col.g += cyn.g / 3.5; col.b += cyn.b / 3.0; col.a += cyn.a / 7.0;\n" +
+            "        half4 blu = content.eval(rc - dc * 0.6667); col.b += blu.b / 3.0; col.a += blu.a / 7.0;\n" +
+            "        half4 pur = content.eval(rc - dc);          col.r += pur.r / 7.0; col.b += pur.b / 3.0; col.a += pur.a / 7.0;\n" +
+            "        // Subtle prismatic tint at the very outer 2px bevel\n" +
+            "        float prism = rimWeight * rimWeight * chromaticAberration * 0.14;\n" +
+            "        half3 prismCol = half3(0.45 + 0.55 * grad.x, 0.55 - 0.35 * grad.y, 0.55 - 0.55 * grad.x);\n" +
+            "        col.rgb = clamp(col.rgb + prismCol * half(prism), half3(0.0), half3(1.0));\n" +
+            "        return col;\n" +
+            "    }\n" +
+            "    return content.eval(rc);\n" +
             "}\n";
+
+    private static float smoothstep(float e0, float e1, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - e0) / Math.max(0.0001f, e1 - e0)));
+        return t * t * (3f - 2f * t);
+    }
 
     // Verified ISO/IEC 18004 Version 5-L (37x37) QR matrix for VietQR VietinBank STK 0989249990
     private static final String[] VIETQR_MATRIX = new String[]{
@@ -172,11 +192,10 @@ public final class LiquidGlassControls {
     }
 
     /**
-     * Exact iOS 26/27 Liquid Glass Switch:
-     * - Rest: long capsule track (66x28dp, #2C2C2E OFF / #34C759 ON) + horizontal white pill (39x23dp).
-     * - Held/Dragged: white pill turns completely transparent and expands into an oversized (55x38dp)
-     *   crystal-clear AGSL refracting & 7-band chromatic-dispersing lens overhanging the track,
-     *   creating the signature dark concave refraction rim + vivid green/grey refracted center.
+     * iOS 26/27 Liquid Glass Switch:
+     * - Single spring `pressProgress` (0..1) drives size, transparency, blur, and edge refraction.
+     * - Crystal-clear core showing vibrant #34C759 (ON) / #48484A (OFF) track underneath.
+     * - Thin specular bevel rim with RGB dispersion only at the edge; centered strictly on track.
      */
     public static final class Ios27GlassSwitch extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -185,7 +204,7 @@ public final class LiquidGlassControls {
 
         private float pos = 0f;
         private float posVel = 0f;
-        private float press = 0f;
+        private float pressProgress = 0f;
         private float pressTarget = 0f;
         private float pressVel = 0f;
         private boolean dragging = false;
@@ -194,11 +213,13 @@ public final class LiquidGlassControls {
         private long lastFrameNs = 0L;
 
         private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint trackBorderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fallbackGlassPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
         private final RectF thumbRect = new RectF();
-        private final Path clipPath = new Path();
+        private final Path thumbClipPath = new Path();
 
         private RenderNode trackNode;
         private RenderNode glassThumbNode;
@@ -211,6 +232,8 @@ public final class LiquidGlassControls {
             this.pos = initial ? 1f : 0f;
             this.listener = listener;
             setClickable(true);
+            trackBorderPaint.setStyle(Paint.Style.STROKE);
+            trackBorderPaint.setStrokeWidth(0.9f * density);
             if (Build.VERSION.SDK_INT >= 33) {
                 glassShader = new RuntimeShader(PILL_REFRACTION_DISPERSION_SHADER);
             }
@@ -226,7 +249,7 @@ public final class LiquidGlassControls {
 
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            setMeasuredDimension(Math.round(88f * density), Math.round(52f * density));
+            setMeasuredDimension(Math.round(80f * density), Math.round(46f * density));
         }
 
         @Override
@@ -241,10 +264,10 @@ public final class LiquidGlassControls {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     float dx = event.getX() - downX;
-                    if (Math.abs(dx) > 5f * density) dragging = true;
+                    if (Math.abs(dx) > 4f * density) dragging = true;
                     if (dragging) {
-                        float left = 22f * density;
-                        float usable = Math.max(1f, getWidth() - 44f * density);
+                        float left = 18f * density;
+                        float usable = Math.max(1f, getWidth() - 36f * density);
                         pos = Math.max(0f, Math.min(1f, (event.getX() - left) / usable));
                         invalidate();
                     }
@@ -281,17 +304,19 @@ public final class LiquidGlassControls {
             boolean moving = false;
             if (!dragging) {
                 float target = checked ? 1f : 0f;
-                float c = 2f * 0.72f * (float) Math.sqrt(460f);
-                float a = -460f * (pos - target) - c * posVel;
+                float c = 2f * 0.76f * (float) Math.sqrt(440f);
+                float a = -440f * (pos - target) - c * posVel;
                 posVel += a * dt;
                 pos = Math.max(0f, Math.min(1f, pos + posVel * dt));
                 if (Math.abs(pos - target) > 0.002f || Math.abs(posVel) > 0.005f) moving = true;
             }
-            float c2 = 2f * 0.78f * (float) Math.sqrt(520f);
-            float a2 = -520f * (press - pressTarget) - c2 * pressVel;
+
+            // Single smooth spring driving scale, glass opacity, blur, and refraction together
+            float c2 = 2f * 0.80f * (float) Math.sqrt(420f);
+            float a2 = -420f * (pressProgress - pressTarget) - c2 * pressVel;
             pressVel += a2 * dt;
-            press = Math.max(0f, Math.min(1f, press + pressVel * dt));
-            if (Math.abs(press - pressTarget) > 0.002f || Math.abs(pressVel) > 0.005f) moving = true;
+            pressProgress = Math.max(0f, Math.min(1f, pressProgress + pressVel * dt));
+            if (Math.abs(pressProgress - pressTarget) > 0.002f || Math.abs(pressVel) > 0.005f) moving = true;
 
             invalidate();
             if (moving) schedule();
@@ -303,8 +328,8 @@ public final class LiquidGlassControls {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            // Long iOS 26/27 capsule track (66x28dp)
-            float trackW = 66f * density;
+            // 1. Track centered strictly in view
+            float trackW = 64f * density;
             float trackH = 28f * density;
             float cxView = w * 0.5f;
             float cyView = h * 0.5f;
@@ -312,85 +337,115 @@ public final class LiquidGlassControls {
                     cxView + trackW * 0.5f, cyView + trackH * 0.5f);
             float tr = trackH * 0.5f;
 
-            // #2C2C2E (OFF) -> #34C759 (iOS Green ON)
-            int r = Math.round(44 + (52 - 44) * pos);
-            int g = Math.round(44 + (199 - 44) * pos);
-            int b = Math.round(46 + (89 - 46) * pos);
+            // Vibrant track colors: #48484A (OFF) -> #34C759 (iOS bright green ON)
+            int r = Math.round(72 + (52 - 72) * pos);
+            int g = Math.round(72 + (199 - 72) * pos);
+            int b = Math.round(74 + (89 - 74) * pos);
             trackPaint.setColor(Color.rgb(r, g, b));
+            trackBorderPaint.setColor(Color.argb(40, 255, 255, 255));
 
-            // 1. Record track over deep black backdrop into trackNode for true concave edge refraction
-            if (Build.VERSION.SDK_INT >= 33 && press > 0.01f && glassShader != null && canvas.isHardwareAccelerated()) {
-                if (trackNode == null) trackNode = new RenderNode("ios27_sw_track");
-                trackNode.setPosition(0, 0, w, h);
-                Canvas tc = trackNode.beginRecording(w, h);
-                try {
-                    tc.drawColor(Color.BLACK);
-                    tc.drawRoundRect(trackRect, tr, tr, trackPaint);
-                } finally {
-                    trackNode.endRecording();
-                }
-            }
+            // Draw track + subtle track rim FIRST (thumb always renders ON TOP, never clipped by track)
             canvas.drawRoundRect(trackRect, tr, tr, trackPaint);
+            canvas.drawRoundRect(trackRect, tr, tr, trackBorderPaint);
 
-            // 2. Horizontal pill thumb: rest (39x23dp) -> pressed (55x38dp overhanging track!)
-            float restW = 39f * density;
-            float restH = 23f * density;
-            float thumbW = restW + 16f * density * press;
-            float thumbH = restH + 15f * density * press;
+            // 2. Thumb geometry driven by single pressProgress (0..1), centered on track Y
+            float glassMix = smoothstep(0.05f, 0.85f, pressProgress);
+            float restW = 38f * density;
+            float restH = 24f * density;
+            // Expands smoothly into horizontal glass pill slightly taller than track (34dp vs 28dp)
+            float thumbW = restW + 10f * density * pressProgress;
+            float thumbH = restH + 10f * density * pressProgress;
 
-            float minCx = trackRect.left + 2.5f * density + restW * 0.5f;
-            float maxCx = trackRect.right - 2.5f * density - restW * 0.5f;
-            float tcx = minCx + (maxCx - minCx) * pos;
+            float minCx = trackRect.left + 2f * density + restW * 0.5f;
+            float maxCx = trackRect.right - 2f * density - restW * 0.5f;
+            float baseCx = minCx + (maxCx - minCx) * pos;
+            // Keep expanded pill balanced symmetrically over track end without drifting far right/left
+            float safeLeftCx = trackRect.left + thumbW * 0.46f;
+            float safeRightCx = trackRect.right - thumbW * 0.46f;
+            float clampedCx = Math.max(safeLeftCx, Math.min(safeRightCx, baseCx));
+            float tcx = baseCx + (clampedCx - baseCx) * pressProgress;
+
             thumbRect.set(tcx - thumbW * 0.5f, cyView - thumbH * 0.5f,
                     tcx + thumbW * 0.5f, cyView + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
 
-            // 3. Real AGSL refracting & 7-band chromatic-dispersing crystal glass pill
-            // POSITIVE refractionAmount displaces rim rays outward into the black surround,
-            // leaving the center clean green/grey while bending the dark edge + rainbow prism inward!
-            if (Build.VERSION.SDK_INT >= 33 && press > 0.01f && trackNode != null
-                    && glassShader != null && canvas.isHardwareAccelerated()) {
-                if (glassThumbNode == null) glassThumbNode = new RenderNode("ios27_sw_glass");
-                glassThumbNode.setPosition(0, 0, w, h);
+            // 3. Crystal-clear AGSL refracting pill (API 33+) or translucent fallback
+            if (glassMix > 0.01f) {
+                if (Build.VERSION.SDK_INT >= 33 && glassShader != null && canvas.isHardwareAccelerated()) {
+                    if (trackNode == null) trackNode = new RenderNode("ios27_sw_track");
+                    if (glassThumbNode == null) glassThumbNode = new RenderNode("ios27_sw_glass");
+                    trackNode.setPosition(0, 0, w, h);
+                    glassThumbNode.setPosition(0, 0, w, h);
 
-                glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
-                glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
-                glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
-                glassShader.setFloatUniform("refractionHeight", Math.max(1f, 11.5f * density * press));
-                glassShader.setFloatUniform("refractionAmount", 17f * density * press);
-                glassShader.setFloatUniform("depthEffect", 0.65f);
-                glassShader.setFloatUniform("chromaticAberration", 0.95f * press);
-                glassThumbNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(glassShader, "content"));
+                    Canvas tc = trackNode.beginRecording(w, h);
+                    try {
+                        // Match card surface behind track (never pitch black mud) + draw vibrant track
+                        tc.drawColor(Color.rgb(22, 22, 28));
+                        tc.drawRoundRect(trackRect, tr, tr, trackPaint);
+                    } finally {
+                        trackNode.endRecording();
+                    }
 
-                Canvas gc = glassThumbNode.beginRecording(w, h);
-                try {
-                    gc.drawRenderNode(trackNode);
-                } finally {
-                    glassThumbNode.endRecording();
+                    float userDisp = LiquidGlassAuthorPage.getDispersion(getContext());
+                    float userRef = Math.max(8f, LiquidGlassAuthorPage.getRefractionDp(getContext()));
+                    float refScale = userRef / 24f;
+
+                    glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
+                    glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
+                    glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
+                    glassShader.setFloatUniform("refractionHeight", Math.max(1f, 5.8f * density * glassMix));
+                    glassShader.setFloatUniform("refractionAmount", -7.5f * density * refScale * glassMix);
+                    glassShader.setFloatUniform("depthEffect", 0.35f);
+                    glassShader.setFloatUniform("chromaticAberration", userDisp * glassMix);
+
+                    RenderEffect fx = RenderEffect.createRuntimeShaderEffect(glassShader, "content");
+                    float subtleBlur = 1.4f * density * glassMix;
+                    if (subtleBlur > 0.3f) {
+                        fx = RenderEffect.createChainEffect(fx,
+                                RenderEffect.createBlurEffect(subtleBlur, subtleBlur, Shader.TileMode.CLAMP));
+                    }
+                    glassThumbNode.setRenderEffect(fx);
+
+                    Canvas gc = glassThumbNode.beginRecording(w, h);
+                    try {
+                        gc.drawRenderNode(trackNode);
+                    } finally {
+                        glassThumbNode.endRecording();
+                    }
+
+                    canvas.save();
+                    thumbClipPath.reset();
+                    thumbClipPath.addRoundRect(thumbRect, thr, thr, Path.Direction.CW);
+                    canvas.clipPath(thumbClipPath);
+                    canvas.drawRenderNode(glassThumbNode);
+                    canvas.restore();
+                } else {
+                    // Clean translucent fallback for API < 33
+                    fallbackGlassPaint.setColor(Color.argb(Math.round(55 * glassMix), 255, 255, 255));
+                    canvas.drawRoundRect(thumbRect, thr, thr, fallbackGlassPaint);
                 }
-
-                canvas.save();
-                clipPath.reset();
-                clipPath.addRoundRect(thumbRect, thr, thr, Path.Direction.CW);
-                canvas.clipPath(clipPath);
-                canvas.drawRenderNode(glassThumbNode);
-                canvas.restore();
             }
 
-            // 4. Solid white pill fades completely to 0 when pressed (pure crystal glass!)
-            int whiteAlpha = Math.round(255f * Math.max(0f, 1f - press * 1.35f));
+            // 4. Smooth white pill crossfade (no abrupt jump!)
+            int whiteAlpha = Math.round(255f * (1f - glassMix));
             if (whiteAlpha > 2) {
                 thumbWhitePaint.setColor(Color.argb(whiteAlpha, 255, 255, 255));
                 canvas.drawRoundRect(thumbRect, thr, thr, thumbWhitePaint);
             }
 
-            // 5. Crisp specular crystal rim when pressed
-            if (press > 0.02f) {
+            // 5. Thin crisp specular glass rim (brighter at top-left, smoothly merges with track rim)
+            if (glassMix > 0.02f) {
                 rimPaint.setStyle(Paint.Style.STROKE);
-                rimPaint.setStrokeWidth(1.05f * density);
-                rimPaint.setShader(new LinearGradient(thumbRect.left, thumbRect.top, thumbRect.left, thumbRect.bottom,
-                        Color.argb(Math.round(150 * press), 255, 255, 255),
-                        Color.argb(Math.round(70 * press), 255, 255, 255),
+                rimPaint.setStrokeWidth(1.1f * density);
+                rimPaint.setShader(new LinearGradient(
+                        thumbRect.left, thumbRect.top,
+                        thumbRect.right, thumbRect.bottom,
+                        new int[]{
+                                Color.argb(Math.round(225 * glassMix), 255, 255, 255),
+                                Color.argb(Math.round(65 * glassMix), 255, 255, 255),
+                                Color.argb(Math.round(135 * glassMix), 255, 255, 255)
+                        },
+                        new float[]{0f, 0.52f, 1f},
                         Shader.TileMode.CLAMP));
                 canvas.drawRoundRect(thumbRect, thr, thr, rimPaint);
                 rimPaint.setShader(null);
@@ -403,10 +458,9 @@ public final class LiquidGlassControls {
     }
 
     /**
-     * Exact iOS 26/27 Liquid Glass Slider:
-     * - Rest: horizontal white pill thumb (36x20dp) on capsule track (6.5dp).
-     * - Held/Dragged: white pill dissolves to pure crystal glass (50x32dp) using the exact same
-     *   positive-refraction AGSL lens + 7-band chromatic dispersion as the Switch & TabBar!
+     * iOS 26/27 Liquid Glass Slider:
+     * - Same single-spring `pressProgress` crystal pill thumb over the slider track.
+     * - Crystal-clear center showing bright orange/grey track behind it, thin RGB bevel rim.
      */
     public static final class Ios27GlassSlider extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -415,7 +469,7 @@ public final class LiquidGlassControls {
         private float value;
         private final OnSliderChangeListener listener;
 
-        private float press = 0f;
+        private float pressProgress = 0f;
         private float pressTarget = 0f;
         private float pressVel = 0f;
         private boolean frameScheduled = false;
@@ -424,11 +478,12 @@ public final class LiquidGlassControls {
         private final Paint trackBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trackFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fallbackGlassPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
         private final RectF fillRect = new RectF();
         private final RectF thumbRect = new RectF();
-        private final Path clipPath = new Path();
+        private final Path thumbClipPath = new Path();
 
         private RenderNode trackNode;
         private RenderNode glassThumbNode;
@@ -454,12 +509,12 @@ public final class LiquidGlassControls {
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             int w = MeasureSpec.getSize(widthMeasureSpec);
-            setMeasuredDimension(w, Math.round(50f * density));
+            setMeasuredDimension(w, Math.round(46f * density));
         }
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            float padH = 28f * density;
+            float padH = 26f * density;
             float usable = Math.max(1f, getWidth() - padH * 2f);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -505,12 +560,12 @@ public final class LiquidGlassControls {
             lastFrameNs = frameTimeNanos;
             if (dt <= 0f || dt > 0.05f) dt = 0.016f;
 
-            float c = 2f * 0.78f * (float) Math.sqrt(500f);
-            float a = -500f * (press - pressTarget) - c * pressVel;
+            float c = 2f * 0.80f * (float) Math.sqrt(420f);
+            float a = -420f * (pressProgress - pressTarget) - c * pressVel;
             pressVel += a * dt;
-            press = Math.max(0f, Math.min(1f, press + pressVel * dt));
+            pressProgress = Math.max(0f, Math.min(1f, pressProgress + pressVel * dt));
             invalidate();
-            if (Math.abs(press - pressTarget) > 0.002f || Math.abs(pressVel) > 0.005f) {
+            if (Math.abs(pressProgress - pressTarget) > 0.002f || Math.abs(pressVel) > 0.005f) {
                 schedule();
             }
         }
@@ -521,83 +576,103 @@ public final class LiquidGlassControls {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float padH = 28f * density;
-            float trackH = (6.5f + 2.5f * press) * density;
+            float padH = 26f * density;
+            float trackH = (6.5f + 2.0f * pressProgress) * density;
             float cy = h * 0.5f;
             float frac = (maxVal > minVal) ? ((value - minVal) / (maxVal - minVal)) : 0f;
 
             trackRect.set(padH, cy - trackH * 0.5f, w - padH, cy + trackH * 0.5f);
             float tr = trackH * 0.5f;
 
-            trackBgPaint.setColor(Color.rgb(52, 52, 60));
+            trackBgPaint.setColor(Color.rgb(66, 66, 74));
             float fillRight = trackRect.left + trackRect.width() * frac;
             fillRect.set(trackRect.left, trackRect.top, Math.max(trackRect.left + trackH, fillRight), trackRect.bottom);
-            trackFillPaint.setColor(Color.rgb(255, 102, 34));
-
-            if (Build.VERSION.SDK_INT >= 33 && press > 0.01f && glassShader != null && canvas.isHardwareAccelerated()) {
-                if (trackNode == null) trackNode = new RenderNode("ios27_sl_track");
-                trackNode.setPosition(0, 0, w, h);
-                Canvas tc = trackNode.beginRecording(w, h);
-                try {
-                    tc.drawColor(Color.BLACK);
-                    tc.drawRoundRect(trackRect, tr, tr, trackBgPaint);
-                    tc.drawRoundRect(fillRect, tr, tr, trackFillPaint);
-                } finally {
-                    trackNode.endRecording();
-                }
-            }
+            trackFillPaint.setColor(Color.rgb(255, 108, 38));
 
             canvas.drawRoundRect(trackRect, tr, tr, trackBgPaint);
             canvas.drawRoundRect(fillRect, tr, tr, trackFillPaint);
 
-            // Horizontal pill thumb (36x20dp rest -> 50x32dp crystal glass pill held!)
-            float thumbW = (36f + 14f * press) * density;
-            float thumbH = (20f + 12f * press) * density;
+            // Single pressProgress drives size, glass transparency, blur & bevel refraction
+            float glassMix = smoothstep(0.05f, 0.85f, pressProgress);
+            float thumbW = (34f + 12f * pressProgress) * density;
+            float thumbH = (20f + 10f * pressProgress) * density;
             float cx = trackRect.left + trackRect.width() * frac;
             thumbRect.set(cx - thumbW * 0.5f, cy - thumbH * 0.5f, cx + thumbW * 0.5f, cy + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
 
-            if (Build.VERSION.SDK_INT >= 33 && press > 0.01f && trackNode != null
-                    && glassShader != null && canvas.isHardwareAccelerated()) {
-                if (glassThumbNode == null) glassThumbNode = new RenderNode("ios27_sl_glass");
-                glassThumbNode.setPosition(0, 0, w, h);
+            if (glassMix > 0.01f) {
+                if (Build.VERSION.SDK_INT >= 33 && glassShader != null && canvas.isHardwareAccelerated()) {
+                    if (trackNode == null) trackNode = new RenderNode("ios27_sl_track");
+                    if (glassThumbNode == null) glassThumbNode = new RenderNode("ios27_sl_glass");
+                    trackNode.setPosition(0, 0, w, h);
+                    glassThumbNode.setPosition(0, 0, w, h);
 
-                glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
-                glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
-                glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
-                glassShader.setFloatUniform("refractionHeight", Math.max(1f, 9.5f * density * press));
-                glassShader.setFloatUniform("refractionAmount", 15f * density * press);
-                glassShader.setFloatUniform("depthEffect", 0.65f);
-                glassShader.setFloatUniform("chromaticAberration", 0.95f * press);
-                glassThumbNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(glassShader, "content"));
+                    Canvas tc = trackNode.beginRecording(w, h);
+                    try {
+                        tc.drawColor(Color.rgb(22, 22, 28));
+                        tc.drawRoundRect(trackRect, tr, tr, trackBgPaint);
+                        tc.drawRoundRect(fillRect, tr, tr, trackFillPaint);
+                    } finally {
+                        trackNode.endRecording();
+                    }
 
-                Canvas gc = glassThumbNode.beginRecording(w, h);
-                try {
-                    gc.drawRenderNode(trackNode);
-                } finally {
-                    glassThumbNode.endRecording();
+                    float userDisp = LiquidGlassAuthorPage.getDispersion(getContext());
+                    float userRef = Math.max(8f, LiquidGlassAuthorPage.getRefractionDp(getContext()));
+                    float refScale = userRef / 24f;
+
+                    glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
+                    glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
+                    glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
+                    glassShader.setFloatUniform("refractionHeight", Math.max(1f, 5.2f * density * glassMix));
+                    glassShader.setFloatUniform("refractionAmount", -6.8f * density * refScale * glassMix);
+                    glassShader.setFloatUniform("depthEffect", 0.35f);
+                    glassShader.setFloatUniform("chromaticAberration", userDisp * glassMix);
+
+                    RenderEffect fx = RenderEffect.createRuntimeShaderEffect(glassShader, "content");
+                    float subtleBlur = 1.2f * density * glassMix;
+                    if (subtleBlur > 0.3f) {
+                        fx = RenderEffect.createChainEffect(fx,
+                                RenderEffect.createBlurEffect(subtleBlur, subtleBlur, Shader.TileMode.CLAMP));
+                    }
+                    glassThumbNode.setRenderEffect(fx);
+
+                    Canvas gc = glassThumbNode.beginRecording(w, h);
+                    try {
+                        gc.drawRenderNode(trackNode);
+                    } finally {
+                        glassThumbNode.endRecording();
+                    }
+
+                    canvas.save();
+                    thumbClipPath.reset();
+                    thumbClipPath.addRoundRect(thumbRect, thr, thr, Path.Direction.CW);
+                    canvas.clipPath(thumbClipPath);
+                    canvas.drawRenderNode(glassThumbNode);
+                    canvas.restore();
+                } else {
+                    fallbackGlassPaint.setColor(Color.argb(Math.round(55 * glassMix), 255, 255, 255));
+                    canvas.drawRoundRect(thumbRect, thr, thr, fallbackGlassPaint);
                 }
-
-                canvas.save();
-                clipPath.reset();
-                clipPath.addRoundRect(thumbRect, thr, thr, Path.Direction.CW);
-                canvas.clipPath(clipPath);
-                canvas.drawRenderNode(glassThumbNode);
-                canvas.restore();
             }
 
-            int whiteAlpha = Math.round(255f * Math.max(0f, 1f - press * 1.35f));
+            int whiteAlpha = Math.round(255f * (1f - glassMix));
             if (whiteAlpha > 2) {
                 thumbWhitePaint.setColor(Color.argb(whiteAlpha, 255, 255, 255));
                 canvas.drawRoundRect(thumbRect, thr, thr, thumbWhitePaint);
             }
 
-            if (press > 0.02f) {
+            if (glassMix > 0.02f) {
                 rimPaint.setStyle(Paint.Style.STROKE);
-                rimPaint.setStrokeWidth(1.05f * density);
-                rimPaint.setShader(new LinearGradient(thumbRect.left, thumbRect.top, thumbRect.left, thumbRect.bottom,
-                        Color.argb(Math.round(150 * press), 255, 255, 255),
-                        Color.argb(Math.round(70 * press), 255, 255, 255),
+                rimPaint.setStrokeWidth(1.1f * density);
+                rimPaint.setShader(new LinearGradient(
+                        thumbRect.left, thumbRect.top,
+                        thumbRect.right, thumbRect.bottom,
+                        new int[]{
+                                Color.argb(Math.round(225 * glassMix), 255, 255, 255),
+                                Color.argb(Math.round(65 * glassMix), 255, 255, 255),
+                                Color.argb(Math.round(135 * glassMix), 255, 255, 255)
+                        },
+                        new float[]{0f, 0.52f, 1f},
                         Shader.TileMode.CLAMP));
                 canvas.drawRoundRect(thumbRect, thr, thr, rimPaint);
                 rimPaint.setShader(null);
