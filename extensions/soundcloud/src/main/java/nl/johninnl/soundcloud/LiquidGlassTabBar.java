@@ -107,10 +107,11 @@ public final class LiquidGlassTabBar {
             "    float2 q = p - searchCenter;\n" +
             "    float u = dot(q, dragDir);\n" +
             "    float v = dot(q, float2(-dragDir.y, dragDir.x));\n" +
-            "    float sx = 1.0 + searchStretch * 0.36;\n" +
-            "    float sy = 1.0 / (1.0 + searchStretch * 0.16);\n" +
-            "    float2 scaled = float2(u / sx, v / sy);\n" +
-            "    return (length(scaled) - searchRadius) * min(sx, sy);\n" +
+            "    // Plump round-ended capsule elongation along dragDir (always perfectly round tips, never pointy!)\n" +
+            "    float ext = searchRadius * 0.24 * searchStretch;\n" +
+            "    float uSeg = u - clamp(u, -ext, ext);\n" +
+            "    float sy = 1.0 - searchStretch * 0.05;\n" +
+            "    return length(float2(uSeg, v / max(sy, 0.88))) - searchRadius;\n" +
             "}\n" +
             "float fieldSd(float2 p) {\n" +
             "    float dSearch = sdStretchedSearch(p);\n" +
@@ -392,10 +393,10 @@ public final class LiquidGlassTabBar {
 
         // Firm, weighted iOS 27 metaball drag on Search circle (allows dragging into TabBar to melt!)
         private boolean trackingSearchBtn = false;
-        // Anchored iOS 27 jelly-stretch drag constants (matching 152100.mp4!)
+        // Fluid iOS 27 jelly-stretch + tail-glide drag constants (soft capsule, glides up to 26dp within safe bounds)
         private static final float DRAG_START_SLOP_DP = 8f;
-        private static final float DRAG_RESISTANCE = 0.22f;
-        private static final float MAX_ANCHOR_SHIFT_DP = 14f;
+        private static final float DRAG_RESISTANCE = 0.32f;
+        private static final float MAX_ANCHOR_SHIFT_DP = 26f;
         private static final float MERGE_THRESHOLD_DP = 7.5f;
 
         private static final int SEARCH_IDLE = 0;
@@ -1805,8 +1806,8 @@ public final class LiquidGlassTabBar {
                 float dMaxMerge = dpf(MERGE_THRESHOLD_DP);
 
                 // Effective stretched radius toward each target so the elongated jelly lobe triggers fusion cleanly!
-                float stretchReachLeft = sRad * (1f + searchStretch * 0.36f * Math.max(0f, -searchDragDirX));
-                float stretchReachUp = sRad * (1f + searchStretch * 0.36f * Math.max(0f, -searchDragDirY));
+                float stretchReachLeft = sRad * (1f + searchStretch * 0.24f * Math.max(0f, -searchDragDirX));
+                float stretchReachUp = sRad * (1f + searchStretch * 0.24f * Math.max(0f, -searchDragDirY));
 
                 // Target 1: TabBar rounded-rect SDF distance from Search stretched edge
                 float qBarX = Math.max(0f, Math.abs(sCx - barCx) - (barHalfW - barRad));
