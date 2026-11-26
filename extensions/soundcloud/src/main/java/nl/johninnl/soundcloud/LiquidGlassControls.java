@@ -2,45 +2,30 @@ package nl.johninnl.soundcloud;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.ColorFilter;
-import android.graphics.ColorMatrix;
-import android.graphics.ColorMatrixColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.PixelFormat;
 import android.graphics.RectF;
 import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
 import android.graphics.RuntimeShader;
 import android.graphics.Shader;
-import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.SystemClock;
 import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewParent;
-import android.widget.Button;
-import android.widget.CompoundButton;
-import android.widget.EditText;
-import android.widget.ImageButton;
-
-import java.util.ArrayList;
-import java.util.WeakHashMap;
 
 /**
  * Real AGSL + RenderNode iOS 26/27 Liquid Glass controls:
- * - Ios27GlassSwitch: pure white pill at rest (#34C759 green ON / #2C2C2E OFF) that morphs into
- *   an oversized crystal-clear AGSL refracting + rainbow-dispersing glass pill when held/dragged.
- * - Ios27GlassSlider: same real AGSL refracting glass pill thumb over the slider track.
+ * - Ios27GlassSwitch: long capsule track (66x28dp) with horizontal white pill thumb (39x23dp)
+ *   that dissolves into an oversized crystal-clear AGSL refracting & 7-band chromatic-dispersing
+ *   glass pill (55x38dp) when held/dragged.
+ * - Ios27GlassSlider: horizontal white pill thumb (36x20dp) that expands into the same real
+ *   AGSL refracting crystal glass pill (50x32dp) over the slider track.
  * - VietQrView: verified offline VietQR for VietinBank (970415) STK 0989249990.
- * - GlobalLiquidGlassStyler: replaces SoundCloud's stock Search bar, Back buttons, and buttons
- *   IN-PLACE with a real RenderNode + AGSL refracting Liquid Glass Drawable (zero overlay boxes).
  */
 @SuppressLint("NewApi")
 public final class LiquidGlassControls {
@@ -139,15 +124,16 @@ public final class LiquidGlassControls {
     /** Crisp offline VietQR view scannable by all Vietnamese banking apps. */
     public static final class VietQrView extends View {
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint modulePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
+        private final Paint modPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint accentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final float density;
 
         public VietQrView(Context ctx) {
             super(ctx);
             this.density = ctx.getResources().getDisplayMetrics().density;
             bgPaint.setColor(Color.WHITE);
-            modulePaint.setColor(Color.rgb(12, 18, 32));
+            modPaint.setColor(Color.rgb(12, 22, 48));
+            accentPaint.setColor(Color.rgb(0, 102, 179));
         }
 
         @Override
@@ -158,28 +144,23 @@ public final class LiquidGlassControls {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            int w = getWidth();
-            int h = getHeight();
-            int size = Math.min(w, h);
-            if (size <= 0) return;
-
-            float corner = 18f * density;
-            rect.set(0f, 0f, size, size);
-            canvas.drawRoundRect(rect, corner, corner, bgPaint);
+            int size = Math.min(getWidth(), getHeight());
+            float corner = 16f * density;
+            canvas.drawRoundRect(0, 0, size, size, corner, corner, bgPaint);
 
             int n = VIETQR_MATRIX.length;
-            float quiet = 14f * density;
+            float quiet = size * 0.085f;
             float cell = (size - quiet * 2f) / n;
-            float rad = cell * 0.22f;
 
             for (int r = 0; r < n; r++) {
                 String row = VIETQR_MATRIX[r];
                 for (int c = 0; c < n; c++) {
                     if (row.charAt(c) == '1') {
-                        float x = quiet + c * cell;
-                        float y = quiet + r * cell;
-                        rect.set(x, y, x + cell + 0.4f, y + cell + 0.4f);
-                        canvas.drawRoundRect(rect, rad, rad, modulePaint);
+                        float left = quiet + c * cell;
+                        float top = quiet + r * cell;
+                        boolean isFinder = (r < 7 && c < 7) || (r < 7 && c >= n - 7) || (r >= n - 7 && c < 7);
+                        Paint p = isFinder ? accentPaint : modPaint;
+                        canvas.drawRect(left, top, left + cell + 0.4f, top + cell + 0.4f, p);
                     }
                 }
             }
@@ -187,14 +168,15 @@ public final class LiquidGlassControls {
     }
 
     public interface OnCheckedChangeListener {
-        void onCheckedChanged(boolean isChecked);
+        void onCheckedChanged(boolean checked);
     }
 
     /**
-     * Exact iOS 26/27 Liquid Glass Switch (matching 152003.jpg - 152009.jpg & 152011.mp4):
-     * - Rest: crisp white pill inside dark gray (#2C2C2E) or vibrant iOS green (#34C759) track.
-     * - Held/Dragged: white pill dissolves into an OVERSIZED crystal-clear AGSL refracting &
-     *   7-band chromatic-dispersing glass pill that bends the green/gray track underneath!
+     * Exact iOS 26/27 Liquid Glass Switch:
+     * - Rest: long capsule track (66x28dp, #2C2C2E OFF / #34C759 ON) + horizontal white pill (39x23dp).
+     * - Held/Dragged: white pill turns completely transparent and expands into an oversized (55x38dp)
+     *   crystal-clear AGSL refracting & 7-band chromatic-dispersing lens overhanging the track,
+     *   creating the signature dark concave refraction rim + vivid green/grey refracted center.
      */
     public static final class Ios27GlassSwitch extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -214,7 +196,6 @@ public final class LiquidGlassControls {
         private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint innerDarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
         private final RectF thumbRect = new RectF();
         private final Path clipPath = new Path();
@@ -245,8 +226,7 @@ public final class LiquidGlassControls {
 
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            // Extra vertical & horizontal headroom so the oversized glass pill NEVER clips!
-            setMeasuredDimension(Math.round(76f * density), Math.round(48f * density));
+            setMeasuredDimension(Math.round(88f * density), Math.round(52f * density));
         }
 
         @Override
@@ -263,8 +243,8 @@ public final class LiquidGlassControls {
                     float dx = event.getX() - downX;
                     if (Math.abs(dx) > 5f * density) dragging = true;
                     if (dragging) {
-                        float left = 18f * density;
-                        float usable = Math.max(1f, getWidth() - 36f * density);
+                        float left = 22f * density;
+                        float usable = Math.max(1f, getWidth() - 44f * density);
                         pos = Math.max(0f, Math.min(1f, (event.getX() - left) / usable));
                         invalidate();
                     }
@@ -323,27 +303,28 @@ public final class LiquidGlassControls {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float trackW = 58f * density;
-            float trackH = 30f * density;
+            // Long iOS 26/27 capsule track (66x28dp)
+            float trackW = 66f * density;
+            float trackH = 28f * density;
             float cxView = w * 0.5f;
             float cyView = h * 0.5f;
             trackRect.set(cxView - trackW * 0.5f, cyView - trackH * 0.5f,
                     cxView + trackW * 0.5f, cyView + trackH * 0.5f);
             float tr = trackH * 0.5f;
 
-            // Blend #2C2C2E (OFF) -> #34C759 (iOS Green ON)
+            // #2C2C2E (OFF) -> #34C759 (iOS Green ON)
             int r = Math.round(44 + (52 - 44) * pos);
             int g = Math.round(44 + (199 - 44) * pos);
             int b = Math.round(46 + (89 - 46) * pos);
             trackPaint.setColor(Color.rgb(r, g, b));
 
-            // 1. Draw track (and record into trackNode for real AGSL refraction when pressed!)
+            // 1. Record track over deep black backdrop into trackNode for true concave edge refraction
             if (Build.VERSION.SDK_INT >= 33 && press > 0.01f && glassShader != null && canvas.isHardwareAccelerated()) {
                 if (trackNode == null) trackNode = new RenderNode("ios27_sw_track");
                 trackNode.setPosition(0, 0, w, h);
                 Canvas tc = trackNode.beginRecording(w, h);
                 try {
-                    tc.drawColor(Color.rgb(22, 22, 28)); // Card backdrop behind switch
+                    tc.drawColor(Color.BLACK);
                     tc.drawRoundRect(trackRect, tr, tr, trackPaint);
                 } finally {
                     trackNode.endRecording();
@@ -351,11 +332,11 @@ public final class LiquidGlassControls {
             }
             canvas.drawRoundRect(trackRect, tr, tr, trackPaint);
 
-            // 2. Thumb geometry: rest (34x25dp white pill) -> pressed (46x38dp OVERSIZED crystal glass pill!)
-            float restW = 34f * density;
-            float restH = 25f * density;
-            float thumbW = restW + 13f * density * press;
-            float thumbH = restH + 13f * density * press;
+            // 2. Horizontal pill thumb: rest (39x23dp) -> pressed (55x38dp overhanging track!)
+            float restW = 39f * density;
+            float restH = 23f * density;
+            float thumbW = restW + 16f * density * press;
+            float thumbH = restH + 15f * density * press;
 
             float minCx = trackRect.left + 2.5f * density + restW * 0.5f;
             float maxCx = trackRect.right - 2.5f * density - restW * 0.5f;
@@ -364,7 +345,9 @@ public final class LiquidGlassControls {
                     tcx + thumbW * 0.5f, cyView + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
 
-            // 3. When pressed: real AGSL refracting & rainbow-dispersing Liquid Glass pill!
+            // 3. Real AGSL refracting & 7-band chromatic-dispersing crystal glass pill
+            // POSITIVE refractionAmount displaces rim rays outward into the black surround,
+            // leaving the center clean green/grey while bending the dark edge + rainbow prism inward!
             if (Build.VERSION.SDK_INT >= 33 && press > 0.01f && trackNode != null
                     && glassShader != null && canvas.isHardwareAccelerated()) {
                 if (glassThumbNode == null) glassThumbNode = new RenderNode("ios27_sw_glass");
@@ -373,10 +356,10 @@ public final class LiquidGlassControls {
                 glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
                 glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
                 glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
-                glassShader.setFloatUniform("refractionHeight", 11f * density * press);
-                glassShader.setFloatUniform("refractionAmount", -16f * density * press);
-                glassShader.setFloatUniform("depthEffect", 1f);
-                glassShader.setFloatUniform("chromaticAberration", 0.75f * press);
+                glassShader.setFloatUniform("refractionHeight", Math.max(1f, 11.5f * density * press));
+                glassShader.setFloatUniform("refractionAmount", 17f * density * press);
+                glassShader.setFloatUniform("depthEffect", 0.65f);
+                glassShader.setFloatUniform("chromaticAberration", 0.95f * press);
                 glassThumbNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(glassShader, "content"));
 
                 Canvas gc = glassThumbNode.beginRecording(w, h);
@@ -391,29 +374,23 @@ public final class LiquidGlassControls {
                 clipPath.addRoundRect(thumbRect, thr, thr, Path.Direction.CW);
                 canvas.clipPath(clipPath);
                 canvas.drawRenderNode(glassThumbNode);
-
-                // Subtle dark crystal rim depth (matches 152005.jpg & 152009.jpg!)
-                innerDarkPaint.setStyle(Paint.Style.STROKE);
-                innerDarkPaint.setStrokeWidth(3.5f * density * press);
-                innerDarkPaint.setColor(Color.argb(Math.round(75 * press), 0, 0, 0));
-                canvas.drawRoundRect(thumbRect, thr, thr, innerDarkPaint);
                 canvas.restore();
             }
 
-            // 4. White solid pill fades out as press -> 1 so thumb becomes pure transparent crystal glass!
-            int whiteAlpha = Math.round(255f * Math.max(0f, 1f - press * 1.15f));
+            // 4. Solid white pill fades completely to 0 when pressed (pure crystal glass!)
+            int whiteAlpha = Math.round(255f * Math.max(0f, 1f - press * 1.35f));
             if (whiteAlpha > 2) {
                 thumbWhitePaint.setColor(Color.argb(whiteAlpha, 255, 255, 255));
                 canvas.drawRoundRect(thumbRect, thr, thr, thumbWhitePaint);
             }
 
-            // 5. Specular glass rim highlight when pressed
+            // 5. Crisp specular crystal rim when pressed
             if (press > 0.02f) {
                 rimPaint.setStyle(Paint.Style.STROKE);
-                rimPaint.setStrokeWidth(1.1f * density);
+                rimPaint.setStrokeWidth(1.05f * density);
                 rimPaint.setShader(new LinearGradient(thumbRect.left, thumbRect.top, thumbRect.left, thumbRect.bottom,
-                        Color.argb(Math.round(220 * press), 255, 255, 255),
-                        Color.argb(Math.round(130 * press), 255, 255, 255),
+                        Color.argb(Math.round(150 * press), 255, 255, 255),
+                        Color.argb(Math.round(70 * press), 255, 255, 255),
                         Shader.TileMode.CLAMP));
                 canvas.drawRoundRect(thumbRect, thr, thr, rimPaint);
                 rimPaint.setShader(null);
@@ -427,9 +404,9 @@ public final class LiquidGlassControls {
 
     /**
      * Exact iOS 26/27 Liquid Glass Slider:
-     * - Rest: crisp white pill thumb on capsule track.
-     * - Held/Dragged: thumb expands into a crystal-clear AGSL refracting & rainbow-dispersing
-     *   Liquid Glass pill that bends the track underneath!
+     * - Rest: horizontal white pill thumb (36x20dp) on capsule track (6.5dp).
+     * - Held/Dragged: white pill dissolves to pure crystal glass (50x32dp) using the exact same
+     *   positive-refraction AGSL lens + 7-band chromatic dispersion as the Switch & TabBar!
      */
     public static final class Ios27GlassSlider extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -448,7 +425,6 @@ public final class LiquidGlassControls {
         private final Paint trackFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint innerDarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
         private final RectF fillRect = new RectF();
         private final RectF thumbRect = new RectF();
@@ -478,12 +454,12 @@ public final class LiquidGlassControls {
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             int w = MeasureSpec.getSize(widthMeasureSpec);
-            setMeasuredDimension(w, Math.round(46f * density));
+            setMeasuredDimension(w, Math.round(50f * density));
         }
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            float padH = 24f * density;
+            float padH = 28f * density;
             float usable = Math.max(1f, getWidth() - padH * 2f);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -545,8 +521,8 @@ public final class LiquidGlassControls {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float padH = 24f * density;
-            float trackH = (7.5f + 2.5f * press) * density;
+            float padH = 28f * density;
+            float trackH = (6.5f + 2.5f * press) * density;
             float cy = h * 0.5f;
             float frac = (maxVal > minVal) ? ((value - minVal) / (maxVal - minVal)) : 0f;
 
@@ -563,7 +539,7 @@ public final class LiquidGlassControls {
                 trackNode.setPosition(0, 0, w, h);
                 Canvas tc = trackNode.beginRecording(w, h);
                 try {
-                    tc.drawColor(Color.rgb(22, 22, 28));
+                    tc.drawColor(Color.BLACK);
                     tc.drawRoundRect(trackRect, tr, tr, trackBgPaint);
                     tc.drawRoundRect(fillRect, tr, tr, trackFillPaint);
                 } finally {
@@ -574,8 +550,9 @@ public final class LiquidGlassControls {
             canvas.drawRoundRect(trackRect, tr, tr, trackBgPaint);
             canvas.drawRoundRect(fillRect, tr, tr, trackFillPaint);
 
-            float thumbW = (30f + 14f * press) * density;
-            float thumbH = (20f + 14f * press) * density;
+            // Horizontal pill thumb (36x20dp rest -> 50x32dp crystal glass pill held!)
+            float thumbW = (36f + 14f * press) * density;
+            float thumbH = (20f + 12f * press) * density;
             float cx = trackRect.left + trackRect.width() * frac;
             thumbRect.set(cx - thumbW * 0.5f, cy - thumbH * 0.5f, cx + thumbW * 0.5f, cy + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
@@ -588,10 +565,10 @@ public final class LiquidGlassControls {
                 glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
                 glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
                 glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
-                glassShader.setFloatUniform("refractionHeight", 10f * density * press);
-                glassShader.setFloatUniform("refractionAmount", -15f * density * press);
-                glassShader.setFloatUniform("depthEffect", 1f);
-                glassShader.setFloatUniform("chromaticAberration", 0.75f * press);
+                glassShader.setFloatUniform("refractionHeight", Math.max(1f, 9.5f * density * press));
+                glassShader.setFloatUniform("refractionAmount", 15f * density * press);
+                glassShader.setFloatUniform("depthEffect", 0.65f);
+                glassShader.setFloatUniform("chromaticAberration", 0.95f * press);
                 glassThumbNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(glassShader, "content"));
 
                 Canvas gc = glassThumbNode.beginRecording(w, h);
@@ -606,15 +583,10 @@ public final class LiquidGlassControls {
                 clipPath.addRoundRect(thumbRect, thr, thr, Path.Direction.CW);
                 canvas.clipPath(clipPath);
                 canvas.drawRenderNode(glassThumbNode);
-
-                innerDarkPaint.setStyle(Paint.Style.STROKE);
-                innerDarkPaint.setStrokeWidth(3f * density * press);
-                innerDarkPaint.setColor(Color.argb(Math.round(70 * press), 0, 0, 0));
-                canvas.drawRoundRect(thumbRect, thr, thr, innerDarkPaint);
                 canvas.restore();
             }
 
-            int whiteAlpha = Math.round(255f * Math.max(0f, 1f - press * 1.15f));
+            int whiteAlpha = Math.round(255f * Math.max(0f, 1f - press * 1.35f));
             if (whiteAlpha > 2) {
                 thumbWhitePaint.setColor(Color.argb(whiteAlpha, 255, 255, 255));
                 canvas.drawRoundRect(thumbRect, thr, thr, thumbWhitePaint);
@@ -622,264 +594,13 @@ public final class LiquidGlassControls {
 
             if (press > 0.02f) {
                 rimPaint.setStyle(Paint.Style.STROKE);
-                rimPaint.setStrokeWidth(1.1f * density);
+                rimPaint.setStrokeWidth(1.05f * density);
                 rimPaint.setShader(new LinearGradient(thumbRect.left, thumbRect.top, thumbRect.left, thumbRect.bottom,
-                        Color.argb(Math.round(220 * press), 255, 255, 255),
-                        Color.argb(Math.round(130 * press), 255, 255, 255),
+                        Color.argb(Math.round(150 * press), 255, 255, 255),
+                        Color.argb(Math.round(70 * press), 255, 255, 255),
                         Shader.TileMode.CLAMP));
                 canvas.drawRoundRect(thumbRect, thr, thr, rimPaint);
                 rimPaint.setShader(null);
-            }
-        }
-    }
-
-    /**
-     * Real-time AGSL refracting Liquid Glass Drawable applied IN-PLACE to SoundCloud's
-     * Search bar, Back buttons, and buttons (replaces stock opaque background completely).
-     */
-    private static final class LiveRefractingGlassDrawable extends Drawable {
-        private final View target;
-        private final float density;
-        private final boolean dark;
-        private final Paint surfacePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
-        private final Path clipPath = new Path();
-        private RenderNode bgNode;
-        private RenderNode fxNode;
-        private RuntimeShader shader;
-        private boolean capturing = false;
-
-        LiveRefractingGlassDrawable(View target, float density, boolean dark) {
-            this.target = target;
-            this.density = density;
-            this.dark = dark;
-            if (Build.VERSION.SDK_INT >= 33) {
-                shader = new RuntimeShader(PILL_REFRACTION_DISPERSION_SHADER);
-            }
-        }
-
-        @Override
-        public void draw(Canvas canvas) {
-            if (capturing) return;
-            int w = target.getWidth();
-            int h = target.getHeight();
-            if (w <= 0 || h <= 0) return;
-
-            rect.set(density, density, w - density, h - density);
-            float r = Math.min(rect.width(), rect.height()) * 0.5f;
-
-            canvas.save();
-            clipPath.reset();
-            clipPath.addRoundRect(rect, r, r, Path.Direction.CW);
-            canvas.clipPath(clipPath);
-
-            if (Build.VERSION.SDK_INT >= 33 && shader != null && canvas.isHardwareAccelerated()) {
-                captureBehind(w, h);
-                if (bgNode != null && bgNode.hasDisplayList()) {
-                    if (fxNode == null) fxNode = new RenderNode("sc_ui_glass_fx");
-                    fxNode.setPosition(0, 0, w, h);
-
-                    ColorMatrix cm = new ColorMatrix();
-                    cm.setSaturation(1.4f);
-                    RenderEffect chain = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(cm));
-                    chain = RenderEffect.createChainEffect(
-                            RenderEffect.createBlurEffect(4f * density, 4f * density, Shader.TileMode.CLAMP), chain);
-
-                    shader.setFloatUniform("size", rect.width(), rect.height());
-                    shader.setFloatUniform("offset", -rect.left, -rect.top);
-                    shader.setFloatUniform("cornerRadii", new float[]{r, r, r, r});
-                    shader.setFloatUniform("refractionHeight", Math.min(r, 14f * density));
-                    shader.setFloatUniform("refractionAmount", -Math.min(r, 14f * density));
-                    shader.setFloatUniform("depthEffect", 0f);
-                    shader.setFloatUniform("chromaticAberration", 0.35f);
-                    chain = RenderEffect.createChainEffect(
-                            RenderEffect.createRuntimeShaderEffect(shader, "content"), chain);
-                    fxNode.setRenderEffect(chain);
-
-                    Canvas fc = fxNode.beginRecording(w, h);
-                    try {
-                        fc.drawRenderNode(bgNode);
-                    } finally {
-                        fxNode.endRecording();
-                    }
-                    canvas.drawRenderNode(fxNode);
-                }
-            }
-
-            surfacePaint.setColor(dark ? Color.argb(95, 28, 28, 36) : Color.argb(120, 245, 247, 252));
-            canvas.drawRoundRect(rect, r, r, surfacePaint);
-            canvas.restore();
-
-            rimPaint.setStyle(Paint.Style.STROKE);
-            rimPaint.setStrokeWidth(1f * density);
-            rimPaint.setShader(new LinearGradient(0f, rect.top, 0f, rect.bottom,
-                    Color.argb(180, 255, 255, 255),
-                    Color.argb(55, 255, 255, 255),
-                    Shader.TileMode.CLAMP));
-            canvas.drawRoundRect(rect, r, r, rimPaint);
-            rimPaint.setShader(null);
-        }
-
-        private void captureBehind(int w, int h) {
-            View root = target.getRootView();
-            if (root == null) return;
-            View content = root.findViewById(android.R.id.content);
-            if (content == null) content = root;
-            if (bgNode == null) bgNode = new RenderNode("sc_ui_glass_bg");
-            bgNode.setPosition(0, 0, w, h);
-
-            int[] tLoc = new int[2];
-            int[] cLoc = new int[2];
-            target.getLocationInWindow(tLoc);
-            content.getLocationInWindow(cLoc);
-
-            capturing = true;
-            Canvas c = bgNode.beginRecording(w, h);
-            try {
-                c.translate(cLoc[0] - tLoc[0], cLoc[1] - tLoc[1]);
-                drawExcluding(c, content, target);
-            } catch (Throwable ignored) {
-            } finally {
-                bgNode.endRecording();
-                capturing = false;
-            }
-        }
-
-        private boolean isAncestor(View cand, View leaf) {
-            ViewParent p = leaf.getParent();
-            while (p instanceof View) {
-                if (p == cand) return true;
-                p = p.getParent();
-            }
-            return false;
-        }
-
-        private void drawExcluding(Canvas c, View v, View ex) {
-            if (v == ex || v.getVisibility() != View.VISIBLE) return;
-            if (!isAncestor(v, ex)) {
-                v.draw(c);
-                return;
-            }
-            if (v instanceof ViewGroup) {
-                ViewGroup vg = (ViewGroup) v;
-                Drawable bg = vg.getBackground();
-                if (bg != null) bg.draw(c);
-                for (int i = 0; i < vg.getChildCount(); i++) {
-                    View ch = vg.getChildAt(i);
-                    if (ch == ex || ch.getVisibility() != View.VISIBLE) continue;
-                    int s = c.save();
-                    c.translate(ch.getLeft() + ch.getTranslationX() - vg.getScrollX(),
-                            ch.getTop() + ch.getTranslationY() - vg.getScrollY());
-                    drawExcluding(c, ch, ex);
-                    c.restoreToCount(s);
-                }
-            }
-        }
-
-        @Override public void setAlpha(int alpha) {}
-        @Override public void setColorFilter(ColorFilter cf) {}
-        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
-    }
-
-    /**
-     * Global Liquid Glass UI transformer:
-     * - Always upgrades SoundCloud's Search bar IN-PLACE to real AGSL refracting Liquid Glass
-     *   (stripping the stock opaque search bar completely, never drawing a second box over it!).
-     * - When "Bật LiquidGlass" is ON, also transforms back buttons & action buttons IN-PLACE.
-     */
-    public static final class GlobalLiquidGlassStyler {
-        private static final WeakHashMap<View, Drawable> ORIGINAL_BG = new WeakHashMap<>();
-        private static final WeakHashMap<View, Drawable> SEARCH_BG = new WeakHashMap<>();
-        private static long lastScanMs = 0L;
-
-        public static void applySearchAndGlobal(View root, View exTab, View exMini, View exAuthor, boolean globalEnabled) {
-            if (root == null) return;
-            if (!globalEnabled && !ORIGINAL_BG.isEmpty()) {
-                restoreGlobal();
-            }
-            long now = SystemClock.uptimeMillis();
-            if (now - lastScanMs < 350L) return;
-            lastScanMs = now;
-            float density = root.getResources().getDisplayMetrics().density;
-            boolean dark = (root.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-            walk(root, exTab, exMini, exAuthor, density, dark, globalEnabled, 0);
-        }
-
-        public static void restoreGlobal() {
-            for (View v : new ArrayList<>(ORIGINAL_BG.keySet())) {
-                if (v != null) v.setBackground(ORIGINAL_BG.get(v));
-            }
-            ORIGINAL_BG.clear();
-        }
-
-        private static boolean isStyled(View v) {
-            return ORIGINAL_BG.containsKey(v) || SEARCH_BG.containsKey(v);
-        }
-
-        private static boolean hasStyledAncestor(View v) {
-            ViewParent p = v.getParent();
-            int d = 0;
-            while (p instanceof View && d < 4) {
-                if (isStyled((View) p)) return true;
-                p = p.getParent();
-                d++;
-            }
-            return false;
-        }
-
-        private static void walk(View v, View ex1, View ex2, View ex3, float density, boolean dark, boolean globalEnabled, int depth) {
-            if (v == null || v == ex1 || v == ex2 || v == ex3 || depth > 14 || v.getVisibility() != View.VISIBLE) return;
-
-            if (!isStyled(v) && !hasStyledAncestor(v) && v.getWidth() > 0 && v.getHeight() > 0) {
-                // Always transform SoundCloud's stock Search Bar IN-PLACE into real AGSL refracting Liquid Glass
-                if (v instanceof EditText) {
-                    View target = v;
-                    ViewParent parent = v.getParent();
-                    if (parent instanceof ViewGroup) {
-                        ViewGroup pg = (ViewGroup) parent;
-                        if (pg.getHeight() >= Math.round(34f * density) && pg.getHeight() <= Math.round(74f * density)) {
-                            target = pg;
-                            // Clear stock opaque background on EditText and its sibling icons inside the search bar
-                            v.setBackgroundColor(Color.TRANSPARENT);
-                            for (int i = 0; i < pg.getChildCount(); i++) {
-                                View sib = pg.getChildAt(i);
-                                if (sib != v && sib instanceof ImageButton) {
-                                    sib.setBackgroundColor(Color.TRANSPARENT);
-                                }
-                            }
-                        }
-                    }
-                    if (!SEARCH_BG.containsKey(target)) {
-                        SEARCH_BG.put(target, target.getBackground());
-                        target.setBackground(new LiveRefractingGlassDrawable(target, density, dark));
-                    }
-                    return;
-                }
-
-                if (globalEnabled) {
-                    if (v instanceof Button && !(v instanceof CompoundButton)) {
-                        ORIGINAL_BG.put(v, v.getBackground());
-                        v.setBackground(new LiveRefractingGlassDrawable(v, density, dark));
-                        return;
-                    } else if (v instanceof ImageButton) {
-                        int w = v.getWidth();
-                        int h = v.getHeight();
-                        if (w >= Math.round(32f * density) && w <= Math.round(60f * density)
-                                && h >= Math.round(32f * density) && h <= Math.round(60f * density)) {
-                            ORIGINAL_BG.put(v, v.getBackground());
-                            v.setBackground(new LiveRefractingGlassDrawable(v, density, dark));
-                            return;
-                        }
-                    }
-                }
-            }
-
-            if (v instanceof ViewGroup) {
-                ViewGroup vg = (ViewGroup) v;
-                for (int i = 0; i < vg.getChildCount(); i++) {
-                    walk(vg.getChildAt(i), ex1, ex2, ex3, density, dark, globalEnabled, depth + 1);
-                }
             }
         }
     }

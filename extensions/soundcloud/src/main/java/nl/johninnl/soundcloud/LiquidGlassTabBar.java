@@ -222,6 +222,7 @@ public final class LiquidGlassTabBar {
 
     private static final class AuthorIconDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path bodyPath = new Path();
         private final float density;
 
         AuthorIconDrawable(float density) {
@@ -230,7 +231,7 @@ public final class LiquidGlassTabBar {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(1.8f * density);
+            paint.setStrokeWidth(1.9f * density);
         }
 
         @Override
@@ -239,11 +240,31 @@ public final class LiquidGlassTabBar {
             int h = getBounds().height();
             if (w <= 0 || h <= 0) return;
             float cx = getBounds().centerX();
-            float cy = getBounds().centerY() + 1.5f * density;
-            float r = Math.min(w, h) * 0.40f;
-            canvas.drawCircle(cx, cy - r * 0.34f, r * 0.34f, paint);
-            RectF arc = new RectF(cx - r * 0.68f, cy + r * 0.08f, cx + r * 0.68f, cy + r * 1.05f);
-            canvas.drawArc(arc, 200f, 140f, false, paint);
+            float cy = getBounds().centerY();
+            float s = Math.min(w, h);
+
+            // Head balanced with neighboring 24dp tab icons
+            float headR = s * 0.175f;
+            float headCy = cy - s * 0.23f;
+            canvas.drawCircle(cx, headCy, headR, paint);
+
+            // Longer torso/shoulders body extending cleanly to bottom baseline
+            float bodyTop = cy + s * 0.02f;
+            float bodyBottom = cy + s * 0.43f;
+            float halfW = s * 0.33f;
+            bodyPath.reset();
+            bodyPath.moveTo(cx - halfW, bodyBottom);
+            bodyPath.cubicTo(
+                    cx - halfW, bodyTop + s * 0.04f,
+                    cx - halfW * 0.55f, bodyTop,
+                    cx, bodyTop
+            );
+            bodyPath.cubicTo(
+                    cx + halfW * 0.55f, bodyTop,
+                    cx + halfW, bodyTop + s * 0.04f,
+                    cx + halfW, bodyBottom
+            );
+            canvas.drawPath(bodyPath, paint);
         }
 
         @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
@@ -339,6 +360,8 @@ public final class LiquidGlassTabBar {
         private boolean trackingSearchBtn = false;
         private float searchDownX = 0f;
         private float searchDownY = 0f;
+        private float searchTouchX = 0f;
+        private float searchTouchY = 0f;
         private float searchPress = 0f;
         private float searchPressTarget = 0f;
         private float searchPressVel = 0f;
@@ -400,9 +423,6 @@ public final class LiquidGlassTabBar {
 
         void onSettingsUpdated() {
             loadSettings();
-            if (!globalGlassEnabled) {
-                LiquidGlassControls.GlobalLiquidGlassStyler.restoreGlobal();
-            }
             if (!scrollCollapseEnabled) {
                 collapseTarget = 0f;
             }
@@ -640,11 +660,13 @@ public final class LiquidGlassTabBar {
         }
 
         private void handleDirectBarTouch(int action, float x, float y) {
-            // === Firm Weighted Search Circle Drag -> Melts into TabBar via Metaball SDF (152000.mp4) ===
+            // === Anchored iOS 27 Elastic Rubber-Band Search Circle + Spreading Glow ===
             if (action == MotionEvent.ACTION_DOWN && isInsideSearchCircle(x, y)) {
                 trackingSearchBtn = true;
                 searchDownX = x;
                 searchDownY = y;
+                searchTouchX = x;
+                searchTouchY = y;
                 searchPressTarget = 1f;
                 searchOffsetTargetX = 0f;
                 searchOffsetTargetY = 0f;
@@ -653,13 +675,21 @@ public final class LiquidGlassTabBar {
             }
             if (trackingSearchBtn) {
                 if (action == MotionEvent.ACTION_MOVE) {
+                    searchTouchX = x;
+                    searchTouchY = y;
                     float dx = x - searchDownX;
                     float dy = y - searchDownY;
-                    // Firm weighted feel: tracks finger tightly toward the TabBar (up to -88dp left, +16dp right, ±34dp Y)
-                    float dampX = (dx < 0f) ? (dx * 0.62f) : (dx * 0.28f);
-                    float dampY = dy * 0.45f;
-                    searchOffsetTargetX = Math.max(-dpf(88f), Math.min(dpf(16f), dampX));
-                    searchOffsetTargetY = Math.max(-dpf(34f), Math.min(dpf(22f), dampY));
+                    // Tight, anchored iOS 27 rubber-band range: resists firmly & springs back home
+                    float maxLeft = dpf(16f);
+                    float maxRight = dpf(9f);
+                    float maxUp = dpf(14f);
+                    float maxDown = dpf(9f);
+                    searchOffsetTargetX = (dx < 0f)
+                            ? -maxLeft * (float) Math.tanh(-dx / (maxLeft * 2.2f))
+                            : maxRight * (float) Math.tanh(dx / (maxRight * 2.4f));
+                    searchOffsetTargetY = (dy < 0f)
+                            ? -maxUp * (float) Math.tanh(-dy / (maxUp * 2.2f))
+                            : maxDown * (float) Math.tanh(dy / (maxDown * 2.4f));
                     scheduleFrame();
                     return;
                 }
@@ -669,7 +699,7 @@ public final class LiquidGlassTabBar {
                     searchPressTarget = 0f;
                     searchOffsetTargetX = 0f;
                     searchOffsetTargetY = 0f;
-                    if (action == MotionEvent.ACTION_UP && dragDistSq < dpf(45f) * dpf(45f)) {
+                    if (action == MotionEvent.ACTION_UP && dragDistSq < dpf(36f) * dpf(36f)) {
                         if (collapseProgress > 0.4f || collapseTarget > 0.5f) {
                             collapseTarget = 0f;
                         } else {
@@ -1197,8 +1227,6 @@ public final class LiquidGlassTabBar {
                     bar.postDelayed(() -> {
                         View root = bar.getRootView();
                         View content = root != null ? root.findViewById(android.R.id.content) : null;
-                        LiquidGlassControls.GlobalLiquidGlassStyler.applySearchAndGlobal(
-                                content, bar, miniPlayerPill, authorPageView, globalGlassEnabled);
                     }, 120L);
                     return;
                 } catch (Throwable ignored) {
@@ -1260,7 +1288,8 @@ public final class LiquidGlassTabBar {
             if (miniActive && miniPlayerSheet != null) {
                 miniPlayerSheet.setZ(dpf(18f));
                 float dropDist = outerRect.height() > 0f ? outerRect.height() + dpf(8f) : dpf(66f);
-                miniPlayerSheet.setTranslationY(p * dropDist);
+                float pullUpReaction = (searchOffsetY < 0f) ? (searchOffsetY * 0.22f) : 0f;
+                miniPlayerSheet.setTranslationY(p * dropDist + pullUpReaction);
                 float miniW = Math.max(dpf(200f), miniPlayerPill.getWidth());
                 float targetScaleX = (miniW - dpf(66f) * p) / miniW;
                 miniPlayerPill.setPivotX(0f);
@@ -1352,8 +1381,6 @@ public final class LiquidGlassTabBar {
             // Always apply real AGSL Liquid Glass to Search bar; also apply to global buttons when toggled ON
             View root = bar.getRootView();
             View content = root != null ? root.findViewById(android.R.id.content) : null;
-            LiquidGlassControls.GlobalLiquidGlassStyler.applySearchAndGlobal(
-                    content, bar, miniPlayerPill, authorPageView, globalGlassEnabled);
 
             if (Build.VERSION.SDK_INT < 29) return true;
             if (bar.getWidth() > 0 && bar.getHeight() > 0) {
@@ -1602,6 +1629,25 @@ public final class LiquidGlassTabBar {
                 int surfAlpha = computeSurfaceTintAlpha(dark);
                 surfacePaint.setColor(dark ? Color.argb(surfAlpha, 24, 24, 28) : Color.argb(surfAlpha, 245, 247, 252));
                 canvas.drawRoundRect(miniRect, radius, radius, surfacePaint);
+
+                // Spread interactive glow onto the Mini-Player when Search circle is pressed/pulled up!
+                if (Build.VERSION.SDK_INT >= 33 && searchPress > 0.01f && highlightShader != null) {
+                    float upPull = Math.max(0f, Math.min(1f, -searchOffsetY / dpf(12f)));
+                    float miniGlow = searchPress * (0.25f + 0.75f * upPull);
+                    if (miniGlow > 0.02f) {
+                        Paint mpGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+                        mpGlow.setBlendMode(BlendMode.PLUS);
+                        float glowX = Math.max(miniRect.left, Math.min(miniRect.right,
+                                miniRect.right - dpf(24f) + searchOffsetX));
+                        float glowY = miniRect.bottom + dpf(8f) + searchOffsetY * 0.5f;
+                        highlightShader.setFloatUniform("size", miniRect.width(), miniRect.height());
+                        highlightShader.setColorUniform("color", Color.argb(Math.round(255 * 0.22f * miniGlow), 255, 255, 255));
+                        highlightShader.setFloatUniform("radius", miniRect.height() * 1.9f);
+                        highlightShader.setFloatUniform("position", glowX - miniRect.left, glowY - miniRect.top);
+                        mpGlow.setShader(highlightShader);
+                        canvas.drawRect(miniRect, mpGlow);
+                    }
+                }
                 canvas.restore();
 
                 drawBloomRim(canvas, miniRect, radius, 0.75f, -45f);
@@ -1649,8 +1695,8 @@ public final class LiquidGlassTabBar {
 
                 // Smooth metaball k increases dynamically when dragging or collapsing!
                 float dragMag = (float) Math.hypot(searchOffsetX, searchOffsetY);
-                float fusionFactor = Math.min(1f, (dragMag / dpf(24f)) + p * 0.85f);
-                float smoothK = dpf(8f + 22f * fusionFactor);
+                float fusionFactor = Math.min(1f, (dragMag / dpf(14f)) + p * 0.85f);
+                float smoothK = dpf(6f + 20f * fusionFactor);
 
                 if (Build.VERSION.SDK_INT >= 33 && backdropNode != null
                         && backdropNode.hasDisplayList() && metaballShader != null
@@ -1895,16 +1941,50 @@ public final class LiquidGlassTabBar {
                     float cr = (animSearchRect.height() * 0.5f) * (1f + 0.18f * searchPress);
 
                     if (Build.VERSION.SDK_INT >= 33 && searchPress > 0.01f && highlightShader != null) {
+                        // A. Dynamic touch-following interactive highlight inside Search circle
                         canvas.save();
                         clipPath.reset();
                         clipPath.addCircle(cx, cy, cr, Path.Direction.CW);
                         canvas.clipPath(clipPath);
                         highlightPaint.setBlendMode(BlendMode.PLUS);
                         highlightPaint.setShader(null);
-                        highlightPaint.setColor(Color.argb(Math.round(255 * 0.14f * searchPress), 255, 255, 255));
+                        highlightPaint.setColor(Color.argb(Math.round(255 * 0.07f * searchPress), 255, 255, 255));
                         canvas.drawCircle(cx, cy, cr, highlightPaint);
+
+                        float localFx = Math.max(0f, Math.min(cr * 2f, (searchTouchX - (cx - cr))));
+                        float localFy = Math.max(0f, Math.min(cr * 2f, (searchTouchY - (cy - cr))));
+                        highlightShader.setFloatUniform("size", cr * 2f, cr * 2f);
+                        highlightShader.setColorUniform("color", Color.argb(Math.round(255 * 0.22f * searchPress), 255, 255, 255));
+                        highlightShader.setFloatUniform("radius", cr * 1.45f);
+                        highlightShader.setFloatUniform("position", localFx, localFy);
+                        highlightPaint.setShader(highlightShader);
+                        canvas.drawCircle(cx, cy, cr, highlightPaint);
+                        highlightPaint.setShader(null);
                         highlightPaint.setBlendMode(null);
                         canvas.restore();
+
+                        // B. Spread/bleed interactive glow onto the adjacent TabBar pill when pulled left / held!
+                        if (p < 0.75f && outerRect.width() > 0f) {
+                            float leftPull = Math.max(0f, Math.min(1f, -searchOffsetX / dpf(14f)));
+                            float bleedStrength = searchPress * (0.28f + 0.72f * leftPull) * (1f - p);
+                            if (bleedStrength > 0.02f) {
+                                float outerRadius = outerRect.height() * 0.5f;
+                                canvas.save();
+                                clipPath.reset();
+                                clipPath.addRoundRect(outerRect, outerRadius, outerRadius, Path.Direction.CW);
+                                canvas.clipPath(clipPath);
+                                highlightPaint.setBlendMode(BlendMode.PLUS);
+                                highlightShader.setFloatUniform("size", outerRect.width(), outerRect.height());
+                                highlightShader.setColorUniform("color", Color.argb(Math.round(255 * 0.18f * bleedStrength), 255, 255, 255));
+                                highlightShader.setFloatUniform("radius", outerRect.height() * 1.65f);
+                                highlightShader.setFloatUniform("position", cx - outerRect.left, cy - outerRect.top);
+                                highlightPaint.setShader(highlightShader);
+                                canvas.drawRect(outerRect, highlightPaint);
+                                highlightPaint.setShader(null);
+                                highlightPaint.setBlendMode(null);
+                                canvas.restore();
+                            }
+                        }
                     }
 
                     int activeOrange = Color.rgb(255, 122, 56);

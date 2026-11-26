@@ -46,7 +46,7 @@ public final class LiquidGlassAuthorPage {
     }
 
     public static boolean isGlobalGlassEnabled(Context ctx) {
-        return prefs(ctx).getBoolean(KEY_GLOBAL_GLASS, false);
+        return false;
     }
 
     public static boolean isScrollCollapseEnabled(Context ctx) {
@@ -83,6 +83,8 @@ public final class LiquidGlassAuthorPage {
 
         LinearLayout content = new LinearLayout(ctx);
         content.setOrientation(LinearLayout.VERTICAL);
+        content.setClipChildren(false);
+        content.setClipToPadding(false);
         int padH = Math.round(16f * d);
         int topInset = getStatusBarHeight(ctx) + Math.round(14f * d);
         content.setPadding(padH, topInset, padH, Math.round(145f * d)); // Clear floating Mini-Player + TabBar
@@ -219,20 +221,6 @@ public final class LiquidGlassAuthorPage {
         donateCard.addView(qrBox);
         content.addView(donateCard);
 
-        // === Card 3: Bật LiquidGlass toàn giao diện SoundCloud ===
-        LinearLayout globalCard = makeGlassCard(ctx, d);
-        addSwitchRow(
-                ctx, globalCard, d,
-                "Bật LiquidGlass",
-                "Biến toàn bộ nút bấm, thanh tìm kiếm, nút quay lại và công tắc trong SoundCloud thành hiệu ứng kính Liquid Glass kiểu iOS 27.",
-                sp.getBoolean(KEY_GLOBAL_GLASS, false),
-                checked -> {
-                    sp.edit().putBoolean(KEY_GLOBAL_GLASS, checked).apply();
-                    if (callback != null) callback.onSettingsChanged();
-                }
-        );
-        content.addView(globalCard);
-
         // === Card 4: Tùy chỉnh LiquidGlass TabBar (iOS 27 Sliders + Switch) ===
         LinearLayout customCard = makeGlassCard(ctx, d);
         TextView customTitle = new TextView(ctx);
@@ -322,6 +310,8 @@ public final class LiquidGlassAuthorPage {
     private static LinearLayout makeGlassCard(Context ctx, float d) {
         LinearLayout card = new LinearLayout(ctx);
         card.setOrientation(LinearLayout.VERTICAL);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
         int pad = Math.round(16f * d);
         card.setPadding(pad, pad, pad, pad);
         GradientDrawable bg = new GradientDrawable();
@@ -366,6 +356,8 @@ public final class LiquidGlassAuthorPage {
             boolean initial, LiquidGlassControls.OnCheckedChangeListener onChange) {
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setClipChildren(false);
+        row.setClipToPadding(false);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, Math.round(6f * d), 0, Math.round(10f * d));
 
