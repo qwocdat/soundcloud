@@ -4,14 +4,12 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
 import android.graphics.RuntimeShader;
-import android.graphics.Shader;
 import android.os.Build;
 import android.os.SystemClock;
 import android.view.Choreographer;
@@ -21,15 +19,16 @@ import android.view.View;
 /**
  * Real AGSL + RenderNode iOS 26/27 Liquid Glass Switch & Slider + Offline VietQR.
  *
- * Optical design (matching reference 152009 / 152005):
- * - 1:1 flat crystal-clear core: pixels deeper than `refractionBand` sample `content.eval(coord)`
- *   directly with zero zoom, zero blur, zero tint, and zero inner shadow.
- * - Thin edge refraction band (6..10dp): smooth SDF-normal refraction bends mid-bevel rays outward
- *   (revealing the dark surround as a crisp curved channel) and grazing outer-rim rays inward
- *   (picking up the bright track color + 3-channel RGB chromatic dispersion at the very edge).
- * - No thick white stroke; edge definition comes from pure optical refraction & RGB dispersion
- *   (plus an ultra-faint top specular glint).
- * - Single spring `pressProgress` (0..1) drives expansion, glass crossfade, refraction & dispersion.
+ * Root-cause fixes (LỖI 1):
+ * - Minification AGSL lens (scale > 1.0): `sCore = 1.15 + 0.15 * refraction`,
+ *   `sEdge = sCore + 1.2 * refraction`, `s = mix(sEdge, sCore, t)`.
+ *   Naturally shrinks the track inside the crystal lens and pulls the dark exterior
+ *   inward asymmetrically (thicker on overhanging outer/bottom edges, thinner on inner track side)
+ *   seamlessly matching reference 152009 (ON) & 152005 (OFF).
+ * - RGB chromatic dispersion strictly at the edge (`edgeW = 1.0 - t`), driven by "Tán sắc RGB".
+ * - Zero stroke, zero blur, zero tint, zero inner shadow on thumb.
+ * - Single spring `pressProgress` (0..1) drives expansion, glass crossfade, and refraction smoothly.
+ * - Shared shader & lens geometry across both Ios27GlassSwitch and Ios27GlassSlider.
  */
 @SuppressLint("NewApi")
 public final class LiquidGlassControls {
@@ -85,60 +84,37 @@ public final class LiquidGlassControls {
             "    return col;\n" +
             "}\n";
 
-    // Dedicated shader for Switch & Slider crystal glass thumb (1:1 flat core + edge-band refraction)
-    private static final String THUMB_REFRACTION_DISPERSION_SHADER =
+    // Dedicated minification AGSL lens shader for Switch & Slider crystal glass thumb:
+    // scale > 1.0 minifies the track inside the lens and pulls outside dark surround into an organic rim
+    // with RGB chromatic dispersion at the outer edge (no stroke, no blur, no tint, no inner shadow).
+    private static final String THUMB_MINIFY_GLASS_SHADER =
             "uniform shader content;\n" +
+            "uniform float2 center;\n" +
             "uniform float2 size;\n" +
-            "uniform float2 offset;\n" +
-            "uniform float4 cornerRadii;\n" +
-            "uniform float refractionBand;\n" +
-            "uniform float refractionStrength;\n" +
-            "uniform float chromaticAberration;\n" +
-            "float radiusAt(float2 coord, float4 radii) {\n" +
-            "    if (coord.x >= 0.0) { return coord.y <= 0.0 ? radii.y : radii.z; }\n" +
-            "    else { return coord.y <= 0.0 ? radii.x : radii.w; }\n" +
+            "uniform float refraction;\n" +
+            "uniform float dispersion;\n" +
+            "float sdRoundRect(float2 p, float2 hs, float r) {\n" +
+            "    float2 q = abs(p) - hs + float2(r);\n" +
+            "    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n" +
             "}\n" +
-            "float sdRoundedRect(float2 coord, float2 halfSize, float radius) {\n" +
-            "    float2 q = abs(coord) - (halfSize - float2(radius));\n" +
-            "    return length(max(q, 0.0)) - radius + min(max(q.x, q.y), 0.0);\n" +
-            "}\n" +
-            "float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {\n" +
-            "    float2 q = abs(coord) - (halfSize - float2(radius));\n" +
-            "    if (q.x >= 0.0 || q.y >= 0.0) return sign(coord) * normalize(max(q, 0.0));\n" +
-            "    float gx = step(q.y, q.x);\n" +
-            "    return sign(coord) * float2(gx, 1.0 - gx);\n" +
-            "}\n" +
-            "half4 main(float2 coord) {\n" +
-            "    float2 halfSize = size * 0.5;\n" +
-            "    float2 c = (coord + offset) - halfSize;\n" +
-            "    float r = radiusAt(c, cornerRadii);\n" +
-            "    float sd = sdRoundedRect(c, halfSize, r);\n" +
-            "    float distIn = -sd;\n" +
-            "    // 1. Core region: exact 1:1 pixel sample (no zoom, no blur, no tint, no shadow)\n" +
-            "    if (distIn >= refractionBand || refractionBand <= 0.5) {\n" +
-            "        return content.eval(coord);\n" +
-            "    }\n" +
-            "    // 2. Thin edge refraction band (edgeT: 0 at core boundary -> 1 at outer rim)\n" +
-            "    float edgeT = clamp(1.0 - (max(distIn, 0.0) / max(refractionBand, 0.001)), 0.0, 1.0);\n" +
-            "    float2 n = normalize(gradSdRoundedRect(c, halfSize, r) + float2(0.0001));\n" +
-            "    // Smooth dual-zone optical curve:\n" +
-            "    // - Mid-bevel bends outward (+n) pulling dark surround into a crisp concave channel\n" +
-            "    // - Outer grazing rim bends inward (-n) reflecting the bright track along the very edge\n" +
-            "    float outward = smoothstep(0.0, 0.48, edgeT) * (1.0 - smoothstep(0.58, 0.90, edgeT));\n" +
-            "    float grazing = smoothstep(0.66, 1.0, edgeT);\n" +
-            "    grazing = grazing * grazing;\n" +
-            "    float disp = (outward * 0.85 - grazing * 1.15) * refractionStrength;\n" +
-            "    float2 basePos = coord + n * disp;\n" +
-            "    // 3. RGB chromatic dispersion strictly on the bevel band (3-channel R/G/B offset)\n" +
-            "    float dispAmt = chromaticAberration * (0.28 * outward + 0.55 * grazing) * refractionStrength * 0.42;\n" +
-            "    if (dispAmt > 0.08) {\n" +
-            "        half4 sR = content.eval(basePos + n * dispAmt);\n" +
-            "        half4 sG = content.eval(basePos);\n" +
-            "        half4 sB = content.eval(basePos - n * dispAmt);\n" +
-            "        return half4(sR.r, sG.g, sB.b, 1.0);\n" +
-            "    }\n" +
-            "    half4 s = content.eval(basePos);\n" +
-            "    return half4(s.rgb, 1.0);\n" +
+            "half4 main(float2 frag) {\n" +
+            "    float2 p = frag - center;\n" +
+            "    float2 hs = size * 0.5;\n" +
+            "    float r = min(hs.x, hs.y);\n" +
+            "    float d = sdRoundRect(p, hs, r);\n" +
+            "    if (d > 0.0) return half4(0.0);\n" +
+            "    float depth = clamp(-d / max(r * 0.8, 1.0), 0.0, 1.0);\n" +
+            "    float t = smoothstep(0.0, 1.0, depth);\n" +
+            "    // scale > 1 minifies track in core (~1.15..1.30) and pulls exterior backdrop in at edge\n" +
+            "    float sCore = 1.15 + 0.15 * refraction;\n" +
+            "    float sEdge = sCore + 1.20 * refraction;\n" +
+            "    float s = mix(sEdge, sCore, t);\n" +
+            "    float edgeW = 1.0 - t;\n" +
+            "    float2 disp = float2(1.0 + dispersion * 0.055, 1.0 - dispersion * 0.055);\n" +
+            "    half r_ = content.eval(center + p * (s * mix(1.0, disp.x, edgeW))).r;\n" +
+            "    half g_ = content.eval(center + p * s).g;\n" +
+            "    half b_ = content.eval(center + p * (s * mix(1.0, disp.y, edgeW))).b;\n" +
+            "    return half4(r_, g_, b_, 1.0);\n" +
             "}\n";
 
     private static float smoothstep(float e0, float e1, float x) {
@@ -239,9 +215,9 @@ public final class LiquidGlassControls {
 
     /**
      * iOS 26/27 Liquid Glass Switch (matches 152009 ON / 152005 OFF):
-     * - 1:1 flat unblurred core showing the exact track behind the thumb.
-     * - Pure SDF-normal edge refraction + 3-channel RGB dispersion (zero white stroke, zero blur, zero tint).
-     * - Centered strictly on track Y, drawn on top of track with no track clipping.
+     * - Minifying crystal glass lens (scale > 1) larger than track, overhanging slightly outward.
+     * - Zero stroke, zero blur, zero tint, zero inner shadow.
+     * - Single spring `pressProgress` (0..1) drives size, crossfade, refraction & dispersion.
      */
     public static final class Ios27GlassSwitch extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -261,7 +237,6 @@ public final class LiquidGlassControls {
         private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fallbackGlassPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
         private final RectF thumbRect = new RectF();
         private final Path thumbClipPath = new Path();
@@ -277,10 +252,8 @@ public final class LiquidGlassControls {
             this.pos = initial ? 1f : 0f;
             this.listener = listener;
             setClickable(true);
-            glintPaint.setStyle(Paint.Style.STROKE);
-            glintPaint.setStrokeWidth(0.75f * density);
             if (Build.VERSION.SDK_INT >= 33) {
-                glassShader = new RuntimeShader(THUMB_REFRACTION_DISPERSION_SHADER);
+                glassShader = new RuntimeShader(THUMB_MINIFY_GLASS_SHADER);
             }
         }
 
@@ -294,7 +267,7 @@ public final class LiquidGlassControls {
 
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-            setMeasuredDimension(Math.round(80f * density), Math.round(46f * density));
+            setMeasuredDimension(Math.round(88f * density), Math.round(50f * density));
         }
 
         @Override
@@ -311,8 +284,8 @@ public final class LiquidGlassControls {
                     float dx = event.getX() - downX;
                     if (Math.abs(dx) > 4f * density) dragging = true;
                     if (dragging) {
-                        float left = 18f * density;
-                        float usable = Math.max(1f, getWidth() - 36f * density);
+                        float left = 20f * density;
+                        float usable = Math.max(1f, getWidth() - 40f * density);
                         pos = Math.max(0f, Math.min(1f, (event.getX() - left) / usable));
                         invalidate();
                     }
@@ -356,7 +329,6 @@ public final class LiquidGlassControls {
                 if (Math.abs(pos - target) > 0.002f || Math.abs(posVel) > 0.005f) moving = true;
             }
 
-            // Single spring pressProgress (0..1) controlling size, glass crossfade & refraction
             float c2 = 2f * 0.80f * (float) Math.sqrt(420f);
             float a2 = -420f * (pressProgress - pressTarget) - c2 * pressVel;
             pressVel += a2 * dt;
@@ -382,37 +354,35 @@ public final class LiquidGlassControls {
                     cxView + trackW * 0.5f, cyView + trackH * 0.5f);
             float tr = trackH * 0.5f;
 
-            // #2E2E30 (OFF) -> #34C759 (iOS bright green ON)
-            int r = Math.round(46 + (52 - 46) * pos);
-            int g = Math.round(46 + (199 - 46) * pos);
-            int b = Math.round(48 + (89 - 48) * pos);
+            // #2C2C2E (OFF) -> #34C759 (iOS bright green ON)
+            int r = Math.round(44 + (52 - 44) * pos);
+            int g = Math.round(44 + (199 - 44) * pos);
+            int b = Math.round(46 + (89 - 46) * pos);
             trackPaint.setColor(Color.rgb(r, g, b));
 
-            // Draw track first; thumb always renders on top with zero track clipping
+            // Draw track first; thumb always draws on top with zero track clipping
             canvas.drawRoundRect(trackRect, tr, tr, trackPaint);
 
-            // 2. Thumb geometry centered on track Y (cyView):
-            // Rest: 38x24dp pill -> Held: 50x35dp (overhangs track top/bottom by 3.5dp, never lopsided)
-            float glassMix = smoothstep(0.06f, 0.86f, pressProgress);
+            // 2. Thumb geometry driven by single pressProgress (0..1):
+            // Rest: 38x24dp pill -> Held: 54x36dp lens larger than track, overhanging slightly outward
+            // so outside black surround pulls in asymmetrically (thicker on outer/bottom rim, thinner on inner track side!)
+            float glassMix = smoothstep(0.04f, 0.82f, pressProgress);
             float restW = 38f * density;
             float restH = 24f * density;
-            float thumbW = restW + 12f * density * pressProgress;
-            float thumbH = restH + 11f * density * pressProgress;
+            float thumbW = restW + 16f * density * pressProgress;
+            float thumbH = restH + 12f * density * pressProgress;
 
             float minCx = trackRect.left + 2f * density + restW * 0.5f;
             float maxCx = trackRect.right - 2f * density - restW * 0.5f;
-            float baseCx = minCx + (maxCx - minCx) * pos;
-            // Subtle symmetric anchor so expanded pill sits evenly over the active end of track
-            float targetLeftCx = trackRect.left + thumbW * 0.42f;
-            float targetRightCx = trackRect.right - thumbW * 0.42f;
-            float clampedCx = Math.max(targetLeftCx, Math.min(targetRightCx, baseCx));
-            float tcx = baseCx + (clampedCx - baseCx) * pressProgress;
+            // Subtle outward offset when held (matches 152009 / 152005 asymmetric refraction rim)
+            float outwardShift = (pos * 2f - 1f) * 3.5f * density * pressProgress;
+            float tcx = minCx + (maxCx - minCx) * pos + outwardShift;
 
             thumbRect.set(tcx - thumbW * 0.5f, cyView - thumbH * 0.5f,
                     tcx + thumbW * 0.5f, cyView + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
 
-            // 3. Pure 1:1 core + edge-band AGSL refraction & RGB dispersion (blur = 0, tint = 0, shadow = 0)
+            // 3. Pure minification AGSL crystal lens (zero blur, zero tint, zero stroke, zero shadow)
             if (glassMix > 0.01f) {
                 if (Build.VERSION.SDK_INT >= 33 && glassShader != null && canvas.isHardwareAccelerated()) {
                     if (trackNode == null) trackNode = new RenderNode("ios27_sw_track");
@@ -422,25 +392,21 @@ public final class LiquidGlassControls {
 
                     Canvas tc = trackNode.beginRecording(w, h);
                     try {
-                        // Deep dark surround outside track so mid-bevel outward refraction forms the crisp dark channel
-                        tc.drawColor(Color.rgb(10, 10, 12));
+                        // True dark surround matching card/AMOLED exterior so rim merges seamlessly with background
+                        tc.drawColor(Color.BLACK);
                         tc.drawRoundRect(trackRect, tr, tr, trackPaint);
                     } finally {
                         trackNode.endRecording();
                     }
 
-                    float userRef = Math.max(6f, LiquidGlassAuthorPage.getRefractionDp(getContext()));
-                    float refScale = userRef / 24f;
-                    float userDisp = LiquidGlassAuthorPage.getDispersion(getContext());
+                    float refNorm = Math.max(0f, Math.min(1f, LiquidGlassAuthorPage.getRefractionDp(getContext()) / 36f));
+                    float dispNorm = Math.max(0f, Math.min(1f, LiquidGlassAuthorPage.getDispersion(getContext())));
 
+                    glassShader.setFloatUniform("center", thumbRect.centerX(), thumbRect.centerY());
                     glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
-                    glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
-                    glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
-                    glassShader.setFloatUniform("refractionBand", Math.max(1f, 8.5f * density * glassMix));
-                    glassShader.setFloatUniform("refractionStrength", 11.5f * density * refScale * glassMix);
-                    glassShader.setFloatUniform("chromaticAberration", userDisp * glassMix);
+                    glassShader.setFloatUniform("refraction", refNorm * glassMix);
+                    glassShader.setFloatUniform("dispersion", dispNorm * glassMix);
 
-                    // Zero blur, zero tint: pure crisp RuntimeShader effect
                     glassThumbNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(glassShader, "content"));
 
                     Canvas gc = glassThumbNode.beginRecording(w, h);
@@ -457,32 +423,16 @@ public final class LiquidGlassControls {
                     canvas.drawRenderNode(glassThumbNode);
                     canvas.restore();
                 } else {
-                    fallbackGlassPaint.setColor(Color.argb(Math.round(45 * glassMix), 255, 255, 255));
+                    fallbackGlassPaint.setColor(Color.argb(Math.round(50 * glassMix), 255, 255, 255));
                     canvas.drawRoundRect(thumbRect, thr, thr, fallbackGlassPaint);
                 }
             }
 
-            // 4. Smooth white pill crossfade (0 -> 1 glassMix without jump)
+            // 4. Smooth white pill crossfade driven by the same pressProgress (no frame jump!)
             int whiteAlpha = Math.round(255f * (1f - glassMix));
             if (whiteAlpha > 2) {
                 thumbWhitePaint.setColor(Color.argb(whiteAlpha, 255, 255, 255));
                 canvas.drawRoundRect(thumbRect, thr, thr, thumbWhitePaint);
-            }
-
-            // 5. Ultra-faint top specular glint only (no thick white border!)
-            if (glassMix > 0.05f) {
-                glintPaint.setShader(new LinearGradient(
-                        thumbRect.left, thumbRect.top,
-                        thumbRect.left, thumbRect.bottom,
-                        new int[]{
-                                Color.argb(Math.round(44 * glassMix), 255, 255, 255),
-                                Color.argb(0, 255, 255, 255),
-                                Color.argb(Math.round(24 * glassMix), 255, 255, 255)
-                        },
-                        new float[]{0f, 0.45f, 1f},
-                        Shader.TileMode.CLAMP));
-                canvas.drawRoundRect(thumbRect, thr, thr, glintPaint);
-                glintPaint.setShader(null);
             }
         }
     }
@@ -493,8 +443,8 @@ public final class LiquidGlassControls {
 
     /**
      * iOS 26/27 Liquid Glass Slider:
-     * - Shares the exact same 1:1 core + edge-band refraction & RGB dispersion shader as Switch.
-     * - Zero blur, zero tint, zero white stroke, centered strictly on track Y.
+     * - Shares the exact same `THUMB_MINIFY_GLASS_SHADER` & single-spring `pressProgress` as Switch.
+     * - Zero blur, zero tint, zero stroke, zero inner shadow.
      */
     public static final class Ios27GlassSlider extends View implements Choreographer.FrameCallback {
         private final float density;
@@ -513,7 +463,6 @@ public final class LiquidGlassControls {
         private final Paint trackFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint thumbWhitePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fallbackGlassPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint glintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF trackRect = new RectF();
         private final RectF fillRect = new RectF();
         private final RectF thumbRect = new RectF();
@@ -530,10 +479,8 @@ public final class LiquidGlassControls {
             this.maxVal = max;
             this.value = Math.max(min, Math.min(max, initial));
             this.listener = listener;
-            glintPaint.setStyle(Paint.Style.STROKE);
-            glintPaint.setStrokeWidth(0.75f * density);
             if (Build.VERSION.SDK_INT >= 33) {
-                glassShader = new RuntimeShader(THUMB_REFRACTION_DISPERSION_SHADER);
+                glassShader = new RuntimeShader(THUMB_MINIFY_GLASS_SHADER);
             }
         }
 
@@ -545,12 +492,12 @@ public final class LiquidGlassControls {
         @Override
         protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
             int w = MeasureSpec.getSize(widthMeasureSpec);
-            setMeasuredDimension(w, Math.round(46f * density));
+            setMeasuredDimension(w, Math.round(50f * density));
         }
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            float padH = 26f * density;
+            float padH = 28f * density;
             float usable = Math.max(1f, getWidth() - padH * 2f);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -612,15 +559,15 @@ public final class LiquidGlassControls {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            float padH = 26f * density;
-            float trackH = (6.5f + 2.0f * pressProgress) * density;
+            float padH = 28f * density;
+            float trackH = (7.0f + 2.0f * pressProgress) * density;
             float cy = h * 0.5f;
             float frac = (maxVal > minVal) ? ((value - minVal) / (maxVal - minVal)) : 0f;
 
             trackRect.set(padH, cy - trackH * 0.5f, w - padH, cy + trackH * 0.5f);
             float tr = trackH * 0.5f;
 
-            trackBgPaint.setColor(Color.rgb(58, 58, 64));
+            trackBgPaint.setColor(Color.rgb(54, 54, 60));
             float fillRight = trackRect.left + trackRect.width() * frac;
             fillRect.set(trackRect.left, trackRect.top, Math.max(trackRect.left + trackH, fillRight), trackRect.bottom);
             trackFillPaint.setColor(Color.rgb(255, 108, 38));
@@ -628,9 +575,9 @@ public final class LiquidGlassControls {
             canvas.drawRoundRect(trackRect, tr, tr, trackBgPaint);
             canvas.drawRoundRect(fillRect, tr, tr, trackFillPaint);
 
-            float glassMix = smoothstep(0.06f, 0.86f, pressProgress);
-            float thumbW = (34f + 12f * pressProgress) * density;
-            float thumbH = (20f + 11f * pressProgress) * density;
+            float glassMix = smoothstep(0.04f, 0.82f, pressProgress);
+            float thumbW = (36f + 16f * pressProgress) * density;
+            float thumbH = (21f + 13f * pressProgress) * density;
             float cx = trackRect.left + trackRect.width() * frac;
             thumbRect.set(cx - thumbW * 0.5f, cy - thumbH * 0.5f, cx + thumbW * 0.5f, cy + thumbH * 0.5f);
             float thr = thumbH * 0.5f;
@@ -644,23 +591,20 @@ public final class LiquidGlassControls {
 
                     Canvas tc = trackNode.beginRecording(w, h);
                     try {
-                        tc.drawColor(Color.rgb(10, 10, 12));
+                        tc.drawColor(Color.BLACK);
                         tc.drawRoundRect(trackRect, tr, tr, trackBgPaint);
                         tc.drawRoundRect(fillRect, tr, tr, trackFillPaint);
                     } finally {
                         trackNode.endRecording();
                     }
 
-                    float userRef = Math.max(6f, LiquidGlassAuthorPage.getRefractionDp(getContext()));
-                    float refScale = userRef / 24f;
-                    float userDisp = LiquidGlassAuthorPage.getDispersion(getContext());
+                    float refNorm = Math.max(0f, Math.min(1f, LiquidGlassAuthorPage.getRefractionDp(getContext()) / 36f));
+                    float dispNorm = Math.max(0f, Math.min(1f, LiquidGlassAuthorPage.getDispersion(getContext())));
 
+                    glassShader.setFloatUniform("center", thumbRect.centerX(), thumbRect.centerY());
                     glassShader.setFloatUniform("size", thumbRect.width(), thumbRect.height());
-                    glassShader.setFloatUniform("offset", -thumbRect.left, -thumbRect.top);
-                    glassShader.setFloatUniform("cornerRadii", new float[]{thr, thr, thr, thr});
-                    glassShader.setFloatUniform("refractionBand", Math.max(1f, 7.5f * density * glassMix));
-                    glassShader.setFloatUniform("refractionStrength", 10.5f * density * refScale * glassMix);
-                    glassShader.setFloatUniform("chromaticAberration", userDisp * glassMix);
+                    glassShader.setFloatUniform("refraction", refNorm * glassMix);
+                    glassShader.setFloatUniform("dispersion", dispNorm * glassMix);
 
                     glassThumbNode.setRenderEffect(RenderEffect.createRuntimeShaderEffect(glassShader, "content"));
 
@@ -678,7 +622,7 @@ public final class LiquidGlassControls {
                     canvas.drawRenderNode(glassThumbNode);
                     canvas.restore();
                 } else {
-                    fallbackGlassPaint.setColor(Color.argb(Math.round(45 * glassMix), 255, 255, 255));
+                    fallbackGlassPaint.setColor(Color.argb(Math.round(50 * glassMix), 255, 255, 255));
                     canvas.drawRoundRect(thumbRect, thr, thr, fallbackGlassPaint);
                 }
             }
@@ -687,21 +631,6 @@ public final class LiquidGlassControls {
             if (whiteAlpha > 2) {
                 thumbWhitePaint.setColor(Color.argb(whiteAlpha, 255, 255, 255));
                 canvas.drawRoundRect(thumbRect, thr, thr, thumbWhitePaint);
-            }
-
-            if (glassMix > 0.05f) {
-                glintPaint.setShader(new LinearGradient(
-                        thumbRect.left, thumbRect.top,
-                        thumbRect.left, thumbRect.bottom,
-                        new int[]{
-                                Color.argb(Math.round(44 * glassMix), 255, 255, 255),
-                                Color.argb(0, 255, 255, 255),
-                                Color.argb(Math.round(24 * glassMix), 255, 255, 255)
-                        },
-                        new float[]{0f, 0.45f, 1f},
-                        Shader.TileMode.CLAMP));
-                canvas.drawRoundRect(thumbRect, thr, thr, glintPaint);
-                glintPaint.setShader(null);
             }
         }
     }
